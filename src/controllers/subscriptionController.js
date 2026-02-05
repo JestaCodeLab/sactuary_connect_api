@@ -106,9 +106,7 @@ export const createSubscription = async (req, res) => {
       status: planId === 'seed' ? 'active' : 'active', // Free plans are always active
       currentPeriodStart: new Date(),
       currentPeriodEnd: periodEnd,
-      paymentMethod: planId === 'seed' ? null : paymentMethod,
-      paymentDetails: planId === 'seed' ? null : paymentDetails,
-      billingAddress,
+      ...(planId !== 'seed' && { paymentMethod, paymentDetails, billingAddress }),
       priceAtSubscription: {
         amount: price,
         currency: plan.currency,
