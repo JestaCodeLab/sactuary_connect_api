@@ -1,4 +1,4 @@
-import transporter from '../config/email.js';
+import transporter, { hasEmailConfig } from '../config/email.js';
 import { emailTemplates } from '../services/emailService.js';
 
 /**
@@ -6,14 +6,15 @@ import { emailTemplates } from '../services/emailService.js';
  */
 export const sendVerificationEmail = async (email, firstName, verificationCode) => {
   try {
-    if (!process.env.EMAIL_USER) {
-      console.warn('⚠️  EMAIL_USER not configured. Email not sent. Code:', verificationCode);
-      return true; // Don't fail registration, just warn
+    if (!hasEmailConfig) {
+      console.warn('⚠️  EMAIL not configured. Verification code:', verificationCode);
+      console.warn(`⚠️  To enable emails, set EMAIL_USER and EMAIL_PASSWORD in Railway`);
+      return true; // Don't fail registration
     }
 
     const { subject, html, text } = emailTemplates.verification(firstName, verificationCode);
 
-    await transporter.sendMail({
+    const info = await transporter.sendMail({
       from: process.env.EMAIL_FROM || process.env.EMAIL_USER,
       to: email,
       subject,
@@ -21,10 +22,16 @@ export const sendVerificationEmail = async (email, firstName, verificationCode) 
       text,
     });
 
+    if (info.rejected && info.rejected.length > 0) {
+      console.warn('⚠️  Email rejected:', info.rejected);
+      return false;
+    }
+
     console.log('✓ Verification email sent to:', email);
     return true;
   } catch (error) {
-    console.error('Error sending verification email:', error);
+    console.error('❌ Error sending verification email:', error.message);
+    console.error('   Verification code (use this for testing):', verificationCode);
     // Don't throw - registration should still succeed
     return false;
   }
@@ -35,15 +42,16 @@ export const sendVerificationEmail = async (email, firstName, verificationCode) 
  */
 export const sendPasswordResetEmail = async (email, firstName, resetToken) => {
   try {
-    if (!process.env.EMAIL_USER) {
-      console.warn('⚠️  EMAIL_USER not configured. Email not sent.');
+    if (!hasEmailConfig) {
+      console.warn('⚠️  EMAIL not configured. Password reset token logged.');
+      console.warn(`⚠️  Reset token for ${email}:`, resetToken);
       return true;
     }
 
     const resetLink = `${process.env.CLIENT_URL}/reset-password?token=${resetToken}`;
     const { subject, html, text } = emailTemplates.passwordReset(firstName, resetLink);
 
-    await transporter.sendMail({
+    const info = await transporter.sendMail({
       from: process.env.EMAIL_FROM || process.env.EMAIL_USER,
       to: email,
       subject,
@@ -51,10 +59,16 @@ export const sendPasswordResetEmail = async (email, firstName, resetToken) => {
       text,
     });
 
+    if (info.rejected && info.rejected.length > 0) {
+      console.warn('⚠️  Email rejected:', info.rejected);
+      return false;
+    }
+
     console.log('✓ Password reset email sent to:', email);
     return true;
   } catch (error) {
-    console.error('Error sending password reset email:', error);
+    console.error('❌ Error sending password reset email:', error.message);
+    console.error('   Reset token (use this for testing):', resetToken);
     return false;
   }
 };
@@ -64,14 +78,14 @@ export const sendPasswordResetEmail = async (email, firstName, resetToken) => {
  */
 export const sendWelcomeEmail = async (email, churchName) => {
   try {
-    if (!process.env.EMAIL_USER) {
-      console.warn('⚠️  EMAIL_USER not configured. Welcome email not sent.');
+    if (!hasEmailConfig) {
+      console.warn('⚠️  EMAIL not configured. Welcome email not sent.');
       return true;
     }
 
     const { subject, html, text } = emailTemplates.welcome(churchName);
 
-    await transporter.sendMail({
+    const info = await transporter.sendMail({
       from: process.env.EMAIL_FROM || process.env.EMAIL_USER,
       to: email,
       subject,
@@ -79,10 +93,15 @@ export const sendWelcomeEmail = async (email, churchName) => {
       text,
     });
 
+    if (info.rejected && info.rejected.length > 0) {
+      console.warn('⚠️  Email rejected:', info.rejected);
+      return false;
+    }
+
     console.log('✓ Welcome email sent to:', email);
     return true;
   } catch (error) {
-    console.error('Error sending welcome email:', error);
+    console.error('❌ Error sending welcome email:', error.message);
     return false;
   }
 };
