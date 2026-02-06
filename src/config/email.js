@@ -5,18 +5,21 @@ const hasEmailConfig = process.env.EMAIL_USER && process.env.EMAIL_PASSWORD;
 
 // Email service configuration
 const emailConfig = hasEmailConfig ? {
-  // Using Gmail SMTP (you can change to your email provider)
-  service: process.env.EMAIL_SERVICE || 'gmail',
-  host: process.env.EMAIL_HOST,
-  port: parseInt(process.env.EMAIL_PORT || '587'),
-  secure: process.env.EMAIL_SECURE === 'true', // true for 465, false for other ports
+  // Using Gmail SMTP - use 'service' OR 'host/port', not both
+  ...(process.env.EMAIL_HOST ? {
+    host: process.env.EMAIL_HOST,
+    port: parseInt(process.env.EMAIL_PORT || '587'),
+    secure: process.env.EMAIL_SECURE === 'true',
+  } : {
+    service: 'gmail',
+  }),
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASSWORD, // For Gmail, use App Password instead of regular password
   },
-  connectionTimeout: 10000, // 10 seconds
-  greetingTimeout: 10000,
-  socketTimeout: 10000,
+  connectionTimeout: 30000, // 30 seconds
+  greetingTimeout: 30000,
+  socketTimeout: 30000,
 } : {
   // Fallback to console logging if no email config
   streamTransport: true,
