@@ -4,14 +4,27 @@ const memberSchema = new mongoose.Schema({
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
+  },
+  firstName: {
+    type: String,
     required: true,
   },
+  lastName: {
+    type: String,
+    required: true,
+  },
+  email: {
+    type: String,
+    required: true,
+  },
+  phone: String,
   dateOfBirth: Date,
   gender: String,
   maritalStatus: String,
   address: String,
   city: String,
-  state: String,
+  suburb: String,
+  region: String,
   zipCode: String,
   country: String,
   baptismDate: Date,

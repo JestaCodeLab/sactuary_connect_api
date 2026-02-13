@@ -113,7 +113,7 @@ export const updateOrganization = async (req, res) => {
 
 export const createBranch = async (req, res) => {
   try {
-    const { organizationId, name, address, city, state, zipCode, latitude, longitude, radius, isHeadOffice } = req.body;
+    const { organizationId, name, address, city, suburb, region, zipCode, latitude, longitude, radius, isHeadOffice } = req.body;
 
     if (!organizationId || !name) {
       return res.status(400).json({ error: 'Organization ID and branch name are required' });
@@ -124,7 +124,8 @@ export const createBranch = async (req, res) => {
       name,
       address,
       city,
-      state,
+      suburb,
+      region,
       zipCode,
       latitude,
       longitude,
@@ -147,6 +148,36 @@ export const getBranches = async (req, res) => {
   } catch (error) {
     console.error('Error fetching branches:', error);
     res.status(500).json({ error: 'Failed to fetch branches' });
+  }
+};
+
+export const updateBranch = async (req, res) => {
+  try {
+    const { branchId } = req.params;
+    const { name, address, city, suburb, region, zipCode, latitude, longitude, radius, isHeadOffice } = req.body;
+
+    const branch = await Branch.findById(branchId);
+    if (!branch) {
+      return res.status(404).json({ error: 'Branch not found' });
+    }
+
+    if (name !== undefined) branch.name = name;
+    if (address !== undefined) branch.address = address;
+    if (city !== undefined) branch.city = city;
+    if (suburb !== undefined) branch.suburb = suburb;
+    if (region !== undefined) branch.region = region;
+    if (zipCode !== undefined) branch.zipCode = zipCode;
+    if (latitude !== undefined) branch.latitude = latitude;
+    if (longitude !== undefined) branch.longitude = longitude;
+    if (radius !== undefined) branch.geofenceRadius = radius;
+    if (isHeadOffice !== undefined) branch.isHeadOffice = isHeadOffice;
+    branch.updatedAt = Date.now();
+
+    await branch.save();
+    res.json(branch);
+  } catch (error) {
+    console.error('Error updating branch:', error);
+    res.status(500).json({ error: 'Failed to update branch' });
   }
 };
 
@@ -190,6 +221,7 @@ export default {
   updateOrganization,
   createBranch,
   getBranches,
+  updateBranch,
   createFundBucket,
   getFundBuckets,
 };

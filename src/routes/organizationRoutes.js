@@ -6,6 +6,7 @@ import {
   updateOrganization,
   createBranch,
   getBranches,
+  updateBranch,
   createFundBucket,
   getFundBuckets,
 } from '../controllers/organizationController.js';
@@ -24,6 +25,7 @@ router.put('/:id', authenticateToken, authorizeRole(['admin']), updateOrganizati
 // Branch routes
 router.post('/:organizationId/branches', authenticateToken, authorizeRole(['admin']), createBranch);
 router.get('/:organizationId/branches', authenticateToken, getBranches);
+router.put('/:organizationId/branches/:branchId', authenticateToken, authorizeRole(['admin']), updateBranch);
 
 // Fund bucket routes
 router.post('/:organizationId/fund-buckets', authenticateToken, authorizeRole(['admin']), createFundBucket);

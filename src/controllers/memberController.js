@@ -1,9 +1,8 @@
 import Member from '../models/Member.js';
-import User from '../models/User.js';
 
 export const getAllMembers = async (req, res) => {
   try {
-    const members = await Member.find().populate('userId', 'email firstName lastName phone');
+    const members = await Member.find();
     res.json(members);
   } catch (error) {
     console.error('Error fetching members:', error);
@@ -14,7 +13,7 @@ export const getAllMembers = async (req, res) => {
 export const getMemberById = async (req, res) => {
   try {
     const { id } = req.params;
-    const member = await Member.findById(id).populate('userId', 'email firstName lastName phone');
+    const member = await Member.findById(id);
 
     if (!member) {
       return res.status(404).json({ error: 'Member not found' });
@@ -29,28 +28,34 @@ export const getMemberById = async (req, res) => {
 
 export const createMember = async (req, res) => {
   try {
-    const { 
-      userId, dateOfBirth, gender, maritalStatus, 
-      address, city, state, zipCode, country,
-      baptismDate, membershipDate
+    const {
+      firstName, lastName, email, phone,
+      dateOfBirth, gender, maritalStatus,
+      address, city, suburb, region, zipCode, country,
+      baptismDate, membershipDate, memberStatus,
     } = req.body;
 
-    if (!userId) {
-      return res.status(400).json({ error: 'User ID is required' });
+    if (!firstName || !lastName || !email) {
+      return res.status(400).json({ error: 'First name, last name, and email are required' });
     }
 
     const member = await Member.create({
-      userId,
+      firstName,
+      lastName,
+      email,
+      phone,
       dateOfBirth,
       gender,
       maritalStatus,
       address,
       city,
-      state,
+      suburb,
+      region,
       zipCode,
       country,
       baptismDate,
       membershipDate,
+      memberStatus: memberStatus || 'active',
     });
 
     res.status(201).json(member);
@@ -63,11 +68,14 @@ export const createMember = async (req, res) => {
 export const updateMember = async (req, res) => {
   try {
     const { id } = req.params;
-    const updates = req.body;
+    const updates = { ...req.body };
 
     // Remove fields that shouldn't be updated
     delete updates.id;
+    delete updates._id;
     delete updates.userId;
+
+    updates.updatedAt = Date.now();
 
     const member = await Member.findByIdAndUpdate(id, updates, { new: true });
 
