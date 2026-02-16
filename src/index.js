@@ -11,6 +11,9 @@ import eventRoutes from './routes/eventRoutes.js';
 import donationRoutes from './routes/donationRoutes.js';
 import organizationRoutes from './routes/organizationRoutes.js';
 import subscriptionRoutes from './routes/subscriptionRoutes.js';
+import attendanceRoutes from './routes/attendanceRoutes.js';
+import messageRoutes from './routes/messageRoutes.js';
+import prayerRequestRoutes from './routes/prayerRequestRoutes.js';
 
 dotenv.config();
 
@@ -38,6 +41,9 @@ app.use('/api/events', eventRoutes);
 app.use('/api/donations', donationRoutes);
 app.use('/api/organizations', organizationRoutes);
 app.use('/api/subscriptions', subscriptionRoutes);
+app.use('/api/attendance', attendanceRoutes);
+app.use('/api/messages', messageRoutes);
+app.use('/api/prayer-requests', prayerRequestRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
