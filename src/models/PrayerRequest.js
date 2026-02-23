@@ -1,6 +1,14 @@
 import mongoose from 'mongoose';
 
 const prayerRequestSchema = new mongoose.Schema({
+  organizationId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Organization',
+  },
+  branchId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Branch',
+  },
   title: {
     type: String,
     required: true,
@@ -45,5 +53,7 @@ const prayerRequestSchema = new mongoose.Schema({
     default: Date.now,
   },
 });
+
+prayerRequestSchema.index({ organizationId: 1, branchId: 1 });
 
 export default mongoose.model('PrayerRequest', prayerRequestSchema);

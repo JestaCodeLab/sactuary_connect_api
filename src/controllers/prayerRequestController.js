@@ -1,9 +1,10 @@
 import PrayerRequest from '../models/PrayerRequest.js';
 import User from '../models/User.js';
+import { branchFilter, resolveCreateBranch } from '../utils/branchQuery.js';
 
 export const getAllPrayerRequests = async (req, res) => {
   try {
-    const requests = await PrayerRequest.find().sort({ createdAt: -1 });
+    const requests = await PrayerRequest.find(branchFilter(req)).sort({ createdAt: -1 });
     res.json(requests);
   } catch (error) {
     console.error('Error fetching prayer requests:', error);
@@ -35,6 +36,11 @@ export const createPrayerRequest = async (req, res) => {
       return res.status(400).json({ error: 'Title and description are required' });
     }
 
+    const branchId = resolveCreateBranch(req);
+    if (!branchId) {
+      return res.status(400).json({ error: 'Branch is required' });
+    }
+
     let authorName;
     if (!isAnonymous) {
       const user = await User.findById(req.user.userId).select('firstName lastName');
@@ -44,6 +50,8 @@ export const createPrayerRequest = async (req, res) => {
     }
 
     const request = await PrayerRequest.create({
+      organizationId: req.organizationId,
+      branchId,
       title,
       description,
       category: category || 'other',

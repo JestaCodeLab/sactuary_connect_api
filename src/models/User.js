@@ -21,6 +21,10 @@ const userSchema = new mongoose.Schema({
     required: true,
   },
   phone: String,
+  organizationId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Organization',
+  },
   role: {
     type: String,
     enum: ['admin', 'pastor', 'staff', 'member'],
@@ -44,5 +48,7 @@ const userSchema = new mongoose.Schema({
     default: Date.now,
   },
 });
+
+userSchema.index({ organizationId: 1 });
 
 export default mongoose.model('User', userSchema);

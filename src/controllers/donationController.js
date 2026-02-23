@@ -1,8 +1,9 @@
 import Donation from '../models/Donation.js';
+import { branchFilter, resolveCreateBranch } from '../utils/branchQuery.js';
 
 export const getAllDonations = async (req, res) => {
   try {
-    const donations = await Donation.find()
+    const donations = await Donation.find(branchFilter(req))
       .populate('donorId', 'firstName lastName email')
       .populate('fundBucketId', 'name')
       .sort({ donationDate: -1 });
@@ -39,7 +40,14 @@ export const createDonation = async (req, res) => {
       return res.status(400).json({ error: 'Amount must be greater than 0' });
     }
 
+    const branchId = resolveCreateBranch(req);
+    if (!branchId) {
+      return res.status(400).json({ error: 'Branch is required' });
+    }
+
     const donation = new Donation({
+      organizationId: req.organizationId,
+      branchId,
       donorId,
       amount,
       donationType,
@@ -63,6 +71,8 @@ export const updateDonation = async (req, res) => {
     const { id } = req.params;
     const updates = { ...req.body, updatedAt: Date.now() };
     delete updates._id;
+    delete updates.organizationId;
+    delete updates.branchId;
 
     const donation = await Donation.findByIdAndUpdate(id, updates, { new: true });
 
@@ -80,6 +90,7 @@ export const updateDonation = async (req, res) => {
 export const getDonationStats = async (req, res) => {
   try {
     const stats = await Donation.aggregate([
+      { $match: branchFilter(req) },
       {
         $group: {
           _id: {

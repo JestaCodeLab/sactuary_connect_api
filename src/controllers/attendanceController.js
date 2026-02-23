@@ -1,8 +1,9 @@
 import Attendance from '../models/Attendance.js';
+import { branchFilter, resolveCreateBranch } from '../utils/branchQuery.js';
 
 export const getAllAttendance = async (req, res) => {
   try {
-    const records = await Attendance.find()
+    const records = await Attendance.find(branchFilter(req))
       .populate('eventId', 'title eventType')
       .sort({ date: -1 });
     res.json(records);
@@ -37,7 +38,14 @@ export const createAttendance = async (req, res) => {
       return res.status(400).json({ error: 'Event and date are required' });
     }
 
+    const branchId = resolveCreateBranch(req);
+    if (!branchId) {
+      return res.status(400).json({ error: 'Branch is required' });
+    }
+
     const record = await Attendance.create({
+      organizationId: req.organizationId,
+      branchId,
       eventId,
       date,
       totalPresent: totalPresent || 0,
@@ -93,6 +101,7 @@ export const deleteAttendance = async (req, res) => {
 export const getAttendanceStats = async (req, res) => {
   try {
     const stats = await Attendance.aggregate([
+      { $match: branchFilter(req) },
       {
         $group: {
           _id: null,
@@ -128,7 +137,7 @@ export const getAttendanceStats = async (req, res) => {
       },
     ]);
 
-    const lastRecord = await Attendance.findOne().sort({ date: -1 });
+    const lastRecord = await Attendance.findOne(branchFilter(req)).sort({ date: -1 });
 
     res.json({
       ...(stats[0] || { totalRecords: 0, averageRate: 0, totalPresent: 0, totalAbsent: 0 }),

@@ -4,16 +4,20 @@ import {
   getMemberById,
   createMember,
   updateMember,
-  deleteMember
+  deleteMember,
+  getUpcomingBirthdays,
 } from '../controllers/memberController.js';
 import { authenticateToken, authorizeRole } from '../middleware/auth.js';
+import { resolveBranchContext } from '../middleware/branchContext.js';
+import { requireFeature } from '../middleware/featureGate.js';
 
 const router = express.Router();
 
-router.get('/', authenticateToken, getAllMembers);
-router.get('/:id', authenticateToken, getMemberById);
-router.post('/', authenticateToken, authorizeRole(['admin', 'pastor']), createMember);
-router.put('/:id', authenticateToken, authorizeRole(['admin', 'pastor']), updateMember);
-router.delete('/:id', authenticateToken, authorizeRole(['admin']), deleteMember);
+router.get('/', authenticateToken, resolveBranchContext, getAllMembers);
+router.get('/birthdays/upcoming', authenticateToken, resolveBranchContext, requireFeature('birthday_notifications'), getUpcomingBirthdays);
+router.get('/:id', authenticateToken, resolveBranchContext, getMemberById);
+router.post('/', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), createMember);
+router.put('/:id', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), updateMember);
+router.delete('/:id', authenticateToken, resolveBranchContext, authorizeRole(['admin']), deleteMember);
 
 export default router;

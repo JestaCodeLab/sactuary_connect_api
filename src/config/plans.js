@@ -33,6 +33,10 @@ export const PLANS = {
       { key: 'vendor_management', name: 'Vendor Management', included: false },
       { key: 'advanced_analytics', name: 'Advanced Analytics', included: false },
       { key: 'priority_support', name: 'Priority Support', included: false },
+      { key: 'birthday_notifications', name: 'Birthday Notifications', included: false },
+      { key: 'department_management', name: 'Department Management', included: false },
+      { key: 'event_sharing', name: 'Event Sharing', included: false },
+      { key: 'advanced_financial_reporting', name: 'Advanced Financial Reporting', included: false },
     ],
   },
 
@@ -66,6 +70,10 @@ export const PLANS = {
       { key: 'vendor_management', name: 'Vendor Management', included: false },
       { key: 'advanced_analytics', name: 'Advanced Analytics', included: false },
       { key: 'priority_support', name: 'Priority Support', included: false },
+      { key: 'birthday_notifications', name: 'Birthday Notifications', included: true },
+      { key: 'department_management', name: 'Department Management', included: true },
+      { key: 'event_sharing', name: 'Event Sharing', included: true },
+      { key: 'advanced_financial_reporting', name: 'Advanced Financial Reporting', included: false },
     ],
   },
 
@@ -98,6 +106,10 @@ export const PLANS = {
       { key: 'vendor_management', name: 'Vendor Management', included: true },
       { key: 'advanced_analytics', name: 'Advanced Automation & Analytics', included: true },
       { key: 'priority_support', name: 'Priority Support', included: true },
+      { key: 'birthday_notifications', name: 'Birthday Notifications', included: true },
+      { key: 'department_management', name: 'Department Management', included: true },
+      { key: 'event_sharing', name: 'Event Sharing', included: true },
+      { key: 'advanced_financial_reporting', name: 'Advanced Financial Reporting', included: true },
     ],
   },
 
@@ -124,6 +136,10 @@ export const PLANS = {
       { key: 'dedicated_support', name: 'Dedicated Account Manager', included: true },
       { key: 'sla', name: 'Service Level Agreement (SLA)', included: true },
       { key: 'custom_integrations', name: 'Custom Integrations', included: true },
+      { key: 'birthday_notifications', name: 'Birthday Notifications', included: true },
+      { key: 'department_management', name: 'Department Management', included: true },
+      { key: 'event_sharing', name: 'Event Sharing', included: true },
+      { key: 'advanced_financial_reporting', name: 'Advanced Financial Reporting', included: true },
     ],
   },
 };

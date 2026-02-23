@@ -8,14 +8,15 @@ import {
   deletePrayerRequest,
 } from '../controllers/prayerRequestController.js';
 import { authenticateToken, authorizeRole } from '../middleware/auth.js';
+import { resolveBranchContext } from '../middleware/branchContext.js';
 
 const router = express.Router();
 
-router.get('/', authenticateToken, getAllPrayerRequests);
-router.get('/:id', authenticateToken, getPrayerRequestById);
-router.post('/', authenticateToken, createPrayerRequest);
-router.post('/:id/pray', authenticateToken, prayForRequest);
-router.patch('/:id/answered', authenticateToken, markAsAnswered);
-router.delete('/:id', authenticateToken, authorizeRole(['admin', 'pastor']), deletePrayerRequest);
+router.get('/', authenticateToken, resolveBranchContext, getAllPrayerRequests);
+router.get('/:id', authenticateToken, resolveBranchContext, getPrayerRequestById);
+router.post('/', authenticateToken, resolveBranchContext, createPrayerRequest);
+router.post('/:id/pray', authenticateToken, resolveBranchContext, prayForRequest);
+router.patch('/:id/answered', authenticateToken, resolveBranchContext, markAsAnswered);
+router.delete('/:id', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), deletePrayerRequest);
 
 export default router;

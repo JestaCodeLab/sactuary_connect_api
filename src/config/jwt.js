@@ -6,12 +6,10 @@ dotenv.config();
 const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret_key';
 const JWT_EXPIRATION = process.env.JWT_EXPIRATION || '1h'; // 1 hour session
 
-export const generateToken = (userId, role) => {
-  return jwt.sign(
-    { userId, role },
-    JWT_SECRET,
-    { expiresIn: JWT_EXPIRATION }
-  );
+export const generateToken = (userId, role, organizationId = null) => {
+  const payload = { userId, role };
+  if (organizationId) payload.organizationId = organizationId;
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRATION });
 };
 
 export const verifyToken = (token) => {

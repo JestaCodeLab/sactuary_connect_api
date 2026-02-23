@@ -14,6 +14,10 @@ import subscriptionRoutes from './routes/subscriptionRoutes.js';
 import attendanceRoutes from './routes/attendanceRoutes.js';
 import messageRoutes from './routes/messageRoutes.js';
 import prayerRequestRoutes from './routes/prayerRequestRoutes.js';
+import departmentRoutes from './routes/departmentRoutes.js';
+import expenseRoutes from './routes/expenseRoutes.js';
+import financeRoutes from './routes/financeRoutes.js';
+import userBranchRoutes from './routes/userBranchRoutes.js';
 
 dotenv.config();
 
@@ -44,6 +48,10 @@ app.use('/api/subscriptions', subscriptionRoutes);
 app.use('/api/attendance', attendanceRoutes);
 app.use('/api/messages', messageRoutes);
 app.use('/api/prayer-requests', prayerRequestRoutes);
+app.use('/api/departments', departmentRoutes);
+app.use('/api/expenses', expenseRoutes);
+app.use('/api/finance', financeRoutes);
+app.use('/api', userBranchRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {

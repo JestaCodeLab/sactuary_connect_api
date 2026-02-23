@@ -29,11 +29,11 @@ export const createOrganization = async (req, res) => {
       adminId,
     });
 
-    // Promote user to admin role
-    await User.findByIdAndUpdate(adminId, { role: 'admin' });
+    // Promote user to admin role and set organizationId
+    await User.findByIdAndUpdate(adminId, { role: 'admin', organizationId: organization._id });
 
-    // Generate new token with updated role
-    const newToken = generateToken(adminId, 'admin');
+    // Generate new token with updated role and organizationId
+    const newToken = generateToken(adminId, 'admin', organization._id.toString());
 
     res.status(201).json({
       ...organization.toObject(),
@@ -67,8 +67,15 @@ export const getOrganization = async (req, res) => {
  */
 export const getMyOrganization = async (req, res) => {
   try {
-    const userId = req.user.userId;
-    const organization = await Organization.findOne({ adminId: userId });
+    const { userId, organizationId } = req.user;
+
+    let organization;
+    if (organizationId) {
+      organization = await Organization.findById(organizationId);
+    } else {
+      // Fallback for admin users without organizationId in token
+      organization = await Organization.findOne({ adminId: userId });
+    }
 
     if (!organization) {
       return res.status(404).json({ error: 'No organization found for this user' });

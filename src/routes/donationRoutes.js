@@ -7,13 +7,14 @@ import {
   getDonationStats
 } from '../controllers/donationController.js';
 import { authenticateToken, authorizeRole } from '../middleware/auth.js';
+import { resolveBranchContext } from '../middleware/branchContext.js';
 
 const router = express.Router();
 
-router.get('/stats/summary', authenticateToken, authorizeRole(['admin', 'pastor']), getDonationStats);
-router.get('/', authenticateToken, authorizeRole(['admin', 'pastor']), getAllDonations);
-router.get('/:id', authenticateToken, authorizeRole(['admin', 'pastor']), getDonationById);
-router.post('/', authenticateToken, createDonation);
-router.put('/:id', authenticateToken, authorizeRole(['admin', 'pastor']), updateDonation);
+router.get('/stats/summary', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), getDonationStats);
+router.get('/', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), getAllDonations);
+router.get('/:id', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), getDonationById);
+router.post('/', authenticateToken, resolveBranchContext, createDonation);
+router.put('/:id', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), updateDonation);
 
 export default router;

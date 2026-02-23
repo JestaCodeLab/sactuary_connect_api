@@ -1,6 +1,14 @@
 import mongoose from 'mongoose';
 
 const messageSchema = new mongoose.Schema({
+  organizationId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Organization',
+  },
+  branchId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Branch',
+  },
   subject: {
     type: String,
     required: true,
@@ -43,5 +51,7 @@ const messageSchema = new mongoose.Schema({
     default: Date.now,
   },
 });
+
+messageSchema.index({ organizationId: 1, branchId: 1 });
 
 export default mongoose.model('Message', messageSchema);

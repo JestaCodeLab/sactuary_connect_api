@@ -1,8 +1,9 @@
 import Member from '../models/Member.js';
+import { branchFilter, resolveCreateBranch } from '../utils/branchQuery.js';
 
 export const getAllMembers = async (req, res) => {
   try {
-    const members = await Member.find();
+    const members = await Member.find(branchFilter(req));
     res.json(members);
   } catch (error) {
     console.error('Error fetching members:', error);
@@ -33,13 +34,21 @@ export const createMember = async (req, res) => {
       dateOfBirth, gender, maritalStatus,
       address, city, suburb, region, zipCode, country,
       baptismDate, membershipDate, memberStatus,
+      familyName, familyRelationship, familyMembers, notes,
     } = req.body;
 
     if (!firstName || !lastName || !email) {
       return res.status(400).json({ error: 'First name, last name, and email are required' });
     }
 
+    const branchId = resolveCreateBranch(req);
+    if (!branchId) {
+      return res.status(400).json({ error: 'Branch is required' });
+    }
+
     const member = await Member.create({
+      organizationId: req.organizationId,
+      branchId,
       firstName,
       lastName,
       email,
@@ -56,6 +65,10 @@ export const createMember = async (req, res) => {
       baptismDate,
       membershipDate,
       memberStatus: memberStatus || 'active',
+      familyName,
+      familyRelationship,
+      familyMembers,
+      notes,
     });
 
     res.status(201).json(member);
@@ -74,6 +87,8 @@ export const updateMember = async (req, res) => {
     delete updates.id;
     delete updates._id;
     delete updates.userId;
+    delete updates.organizationId;
+    delete updates.branchId;
 
     updates.updatedAt = Date.now();
 
@@ -106,10 +121,61 @@ export const deleteMember = async (req, res) => {
   }
 };
 
+export const getUpcomingBirthdays = async (req, res) => {
+  try {
+    const days = parseInt(req.query.days) || 7;
+    const now = new Date();
+    const currentDayOfYear = Math.floor(
+      (now - new Date(now.getFullYear(), 0, 0)) / (1000 * 60 * 60 * 24)
+    );
+
+    // Find members with dateOfBirth set, then filter by upcoming birthdays
+    const members = await Member.find({
+      ...branchFilter(req),
+      dateOfBirth: { $ne: null },
+    });
+
+    const today = [];
+    const upcoming = [];
+
+    members.forEach((member) => {
+      const dob = new Date(member.dateOfBirth);
+      // Create a birthday date in the current year
+      const birthdayThisYear = new Date(now.getFullYear(), dob.getMonth(), dob.getDate());
+
+      // If birthday already passed this year, check next year
+      let nextBirthday = birthdayThisYear;
+      if (birthdayThisYear < new Date(now.getFullYear(), now.getMonth(), now.getDate())) {
+        nextBirthday = new Date(now.getFullYear() + 1, dob.getMonth(), dob.getDate());
+      }
+
+      const diffTime = nextBirthday.getTime() - new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+      if (diffDays === 0) {
+        const age = now.getFullYear() - dob.getFullYear();
+        today.push({ ...member.toObject(), age, daysUntilBirthday: 0 });
+      } else if (diffDays > 0 && diffDays <= days) {
+        const age = nextBirthday.getFullYear() - dob.getFullYear();
+        upcoming.push({ ...member.toObject(), age, daysUntilBirthday: diffDays });
+      }
+    });
+
+    // Sort upcoming by nearest birthday
+    upcoming.sort((a, b) => a.daysUntilBirthday - b.daysUntilBirthday);
+
+    res.json({ today, upcoming });
+  } catch (error) {
+    console.error('Error fetching upcoming birthdays:', error);
+    res.status(500).json({ error: 'Failed to fetch upcoming birthdays' });
+  }
+};
+
 export default {
   getAllMembers,
   getMemberById,
   createMember,
   updateMember,
   deleteMember,
+  getUpcomingBirthdays,
 };

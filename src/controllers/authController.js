@@ -1,5 +1,6 @@
 import bcrypt from 'bcryptjs';
 import User from '../models/User.js';
+import Organization from '../models/Organization.js';
 import VerificationCode from '../models/VerificationCode.js';
 import PasswordReset from '../models/PasswordReset.js';
 import { generateToken } from '../config/jwt.js';
@@ -88,7 +89,8 @@ export const verifyEmail = async (req, res) => {
     await VerificationCode.deleteMany({ userId: user._id });
 
     // Generate token for immediate login after verification
-    const token = generateToken(user._id.toString(), user.role);
+    const orgId = user.organizationId?.toString() || null;
+    const token = generateToken(user._id.toString(), user.role, orgId);
 
     res.json({
       message: 'Email verified successfully',
@@ -98,6 +100,7 @@ export const verifyEmail = async (req, res) => {
         firstName: user.firstName,
         lastName: user.lastName,
         role: user.role,
+        organizationId: user.organizationId,
       },
       token,
     });
@@ -161,7 +164,20 @@ export const login = async (req, res) => {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    const token = generateToken(user._id.toString(), user.role);
+    // Resolve organizationId for the token
+    let orgId = user.organizationId?.toString() || null;
+    if (!orgId) {
+      // Fallback: check if user is an admin of an org
+      const org = await Organization.findOne({ adminId: user._id });
+      if (org) {
+        orgId = org._id.toString();
+        // Backfill organizationId on user
+        user.organizationId = org._id;
+        await user.save();
+      }
+    }
+
+    const token = generateToken(user._id.toString(), user.role, orgId);
 
     res.json({
       message: 'Login successful',
@@ -171,6 +187,7 @@ export const login = async (req, res) => {
         firstName: user.firstName,
         lastName: user.lastName,
         role: user.role,
+        organizationId: orgId,
       },
       token,
     });
@@ -245,7 +262,8 @@ export const resetPassword = async (req, res) => {
     await PasswordReset.deleteMany({ userId: resetRecord.userId });
 
     // Generate token to log user in
-    const token = generateToken(user._id.toString(), user.role);
+    const orgId = user.organizationId?.toString() || null;
+    const token = generateToken(user._id.toString(), user.role, orgId);
 
     res.json({
       message: 'Password reset successfully',
@@ -255,6 +273,7 @@ export const resetPassword = async (req, res) => {
         firstName: user.firstName,
         lastName: user.lastName,
         role: user.role,
+        organizationId: user.organizationId,
       },
       token,
     });

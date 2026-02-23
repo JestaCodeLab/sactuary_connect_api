@@ -1,8 +1,9 @@
 import Message from '../models/Message.js';
+import { branchFilter, resolveCreateBranch } from '../utils/branchQuery.js';
 
 export const getAllMessages = async (req, res) => {
   try {
-    const messages = await Message.find().sort({ createdAt: -1 });
+    const messages = await Message.find(branchFilter(req)).sort({ createdAt: -1 });
     res.json(messages);
   } catch (error) {
     console.error('Error fetching messages:', error);
@@ -34,7 +35,14 @@ export const createMessage = async (req, res) => {
       return res.status(400).json({ error: 'Subject and body are required' });
     }
 
+    const branchId = resolveCreateBranch(req);
+    if (!branchId) {
+      return res.status(400).json({ error: 'Branch is required' });
+    }
+
     const message = await Message.create({
+      organizationId: req.organizationId,
+      branchId,
       subject,
       body,
       recipientType,
