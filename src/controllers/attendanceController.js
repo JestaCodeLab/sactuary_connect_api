@@ -1,4 +1,7 @@
 import Attendance from '../models/Attendance.js';
+import AttendanceRecord from '../models/AttendanceRecord.js';
+import Event from '../models/Event.js';
+import Member from '../models/Member.js';
 import { branchFilter, resolveCreateBranch } from '../utils/branchQuery.js';
 
 export const getAllAttendance = async (req, res) => {
@@ -149,6 +152,171 @@ export const getAttendanceStats = async (req, res) => {
   }
 };
 
+export const checkInWithQR = async (req, res) => {
+  try {
+    const { token, memberId, userId, name, email, phone } = req.body;
+
+    if (!token) {
+      return res.status(400).json({ error: 'QR token is required' });
+    }
+
+    // Find event by QR token
+    const event = await Event.findOne({ 'qrCode.token': token });
+
+    if (!event) {
+      return res.status(404).json({ error: 'Invalid QR code' });
+    }
+
+    // Check if QR code is expired
+    if (event.qrCode.expiresAt && new Date() > new Date(event.qrCode.expiresAt)) {
+      return res.status(410).json({ error: 'QR code has expired' });
+    }
+
+    // Check if already checked in
+    const existingCheckIn = await AttendanceRecord.findOne({
+      eventId: event._id,
+      $or: [
+        memberId ? { memberId } : null,
+        userId ? { userId } : null,
+      ].filter(Boolean),
+    });
+
+    if (existingCheckIn) {
+      return res.status(400).json({ 
+        error: 'Already checked in',
+        checkInTime: existingCheckIn.checkInTime,
+      });
+    }
+
+    // Create attendance record
+    const checkInData = {
+      organizationId: event.organizationId,
+      branchId: event.branchId,
+      eventId: event._id,
+      checkInMethod: 'qr',
+      checkInTime: new Date(),
+    };
+
+    if (memberId) {
+      checkInData.memberId = memberId;
+    } else if (userId) {
+      checkInData.userId = userId;
+    } else {
+      // Guest check-in
+      checkInData.checkInMethod = 'guest';
+      checkInData.name = name;
+      checkInData.email = email;
+      checkInData.phone = phone;
+    }
+
+    const record = await AttendanceRecord.create(checkInData);
+    const populated = await record.populate([
+      { path: 'memberId', select: 'firstName lastName email' },
+      { path: 'userId', select: 'firstName lastName email' },
+      { path: 'eventId', select: 'title startDate endDate' },
+    ]);
+
+    res.status(201).json({
+      message: 'Check-in successful',
+      record: populated,
+    });
+  } catch (error) {
+    console.error('Error checking in with QR:', error);
+    res.status(500).json({ error: 'Failed to check in' });
+  }
+};
+
+export const getEventAttendanceRecords = async (req, res) => {
+  try {
+    const { eventId } = req.params;
+
+    const records = await AttendanceRecord.find({ eventId })
+      .populate('memberId', 'firstName lastName email phone')
+      .populate('userId', 'firstName lastName email')
+      .sort({ checkInTime: -1 });
+
+    const stats = {
+      total: records.length,
+      members: records.filter(r => r.memberId).length,
+      users: records.filter(r => r.userId).length,
+      guests: records.filter(r => r.checkInMethod === 'guest').length,
+      qrCheckIns: records.filter(r => r.checkInMethod === 'qr').length,
+      manualCheckIns: records.filter(r => r.checkInMethod === 'manual').length,
+    };
+
+    res.json({ records, stats });
+  } catch (error) {
+    console.error('Error fetching event attendance records:', error);
+    res.status(500).json({ error: 'Failed to fetch attendance records' });
+  }
+};
+
+export const manualCheckIn = async (req, res) => {
+  try {
+    const { eventId, memberId, userId, name, email, phone, notes } = req.body;
+
+    if (!eventId) {
+      return res.status(400).json({ error: 'Event ID is required' });
+    }
+
+    const event = await Event.findById(eventId);
+    if (!event) {
+      return res.status(404).json({ error: 'Event not found' });
+    }
+
+    // Check if already checked in
+    const existingCheckIn = await AttendanceRecord.findOne({
+      eventId,
+      $or: [
+        memberId ? { memberId } : null,
+        userId ? { userId } : null,
+      ].filter(Boolean),
+    });
+
+    if (existingCheckIn) {
+      return res.status(400).json({ 
+        error: 'Already checked in',
+        checkInTime: existingCheckIn.checkInTime,
+      });
+    }
+
+    const checkInData = {
+      organizationId: event.organizationId,
+      branchId: event.branchId,
+      eventId,
+      checkInMethod: 'manual',
+      checkInTime: new Date(),
+      notes,
+    };
+
+    if (memberId) {
+      checkInData.memberId = memberId;
+    } else if (userId) {
+      checkInData.userId = userId;
+    } else {
+      checkInData.checkInMethod = 'guest';
+      checkInData.name = name;
+      checkInData.email = email;
+      checkInData.phone = phone;
+    }
+
+    const record = await AttendanceRecord.create(checkInData);
+    const populated = await record.populate([
+      { path: 'memberId', select: 'firstName lastName email' },
+      { path: 'userId', select: 'firstName lastName email' },
+      { path: 'eventId', select: 'title startDate endDate' },
+    ]);
+
+    res.status(201).json({
+      message: 'Check-in successful',
+      record: populated,
+    });
+  } catch (error) {
+    console.error('Error manual check-in:', error);
+    res.status(500).json({ error: 'Failed to check in' });
+  }
+};
+
 export default {
   getAllAttendance,
   getAttendanceById,
@@ -156,4 +324,7 @@ export default {
   updateAttendance,
   deleteAttendance,
   getAttendanceStats,
+  checkInWithQR,
+  getEventAttendanceRecords,
+  manualCheckIn,
 };

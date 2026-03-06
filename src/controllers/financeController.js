@@ -58,11 +58,68 @@ export const getFinanceOverview = async (req, res) => {
         expenses: monthlyExpenses.find((m) => m._id === month)?.total || 0,
       }));
 
+    // Income by payment method
+    const incomeByMethod = await Donation.aggregate([
+      { $match: branchFilter(req) },
+      {
+        $group: {
+          _id: '$paymentMethod',
+          total: { $sum: '$amount' },
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { total: -1 } },
+    ]);
+
+    // Monthly totals (current month)
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const monthlyIncomeResult = await Donation.aggregate([
+      { $match: { ...branchFilter(req), donationDate: { $gte: monthStart } } },
+      { $group: { _id: null, total: { $sum: '$amount' } } },
+    ]);
+    const monthlyIncomeTotalCurrent = monthlyIncomeResult[0]?.total || 0;
+
+    const monthlyExpenseResult = await Expense.aggregate([
+      { $match: { ...branchFilter(req), date: { $gte: monthStart } } },
+      { $group: { _id: null, total: { $sum: '$amount' } } },
+    ]);
+    const monthlyExpenseTotalCurrent = monthlyExpenseResult[0]?.total || 0;
+
+    // YTD totals
+    const yearStart = new Date(now.getFullYear(), 0, 1);
+    const ytdIncomeResult = await Donation.aggregate([
+      { $match: { ...branchFilter(req), donationDate: { $gte: yearStart } } },
+      { $group: { _id: null, total: { $sum: '$amount' } } },
+    ]);
+    const ytdIncome = ytdIncomeResult[0]?.total || 0;
+
+    const ytdExpenseResult = await Expense.aggregate([
+      { $match: { ...branchFilter(req), date: { $gte: yearStart } } },
+      { $group: { _id: null, total: { $sum: '$amount' } } },
+    ]);
+    const ytdExpenses = ytdExpenseResult[0]?.total || 0;
+
     res.json({
       totalIncome,
       totalExpenses,
       netBalance: totalIncome - totalExpenses,
       monthlyTrends,
+      incomeByMethod: incomeByMethod.map((m) => ({
+        method: m._id || 'unknown',
+        total: m.total,
+        count: m.count,
+      })),
+      monthly: {
+        income: monthlyIncomeTotalCurrent,
+        expenses: monthlyExpenseTotalCurrent,
+        net: monthlyIncomeTotalCurrent - monthlyExpenseTotalCurrent,
+      },
+      ytd: {
+        income: ytdIncome,
+        expenses: ytdExpenses,
+        net: ytdIncome - ytdExpenses,
+      },
     });
   } catch (error) {
     console.error('Error fetching finance overview:', error);

@@ -34,6 +34,24 @@ const eventSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Branch',
   },
+  isRecurring: {
+    type: Boolean,
+    default: false,
+  },
+  recurrencePattern: {
+    type: String,
+    enum: ['weekly', 'biweekly', 'monthly'],
+  },
+  recurrenceDay: {
+    type: Number,
+    min: 0,
+    max: 6,
+  },
+  recurrenceEndDate: Date,
+  parentEventId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Event',
+  },
   shareToken: {
     type: String,
     unique: true,
@@ -42,6 +60,15 @@ const eventSchema = new mongoose.Schema({
   isPublic: {
     type: Boolean,
     default: false,
+  },
+  qrCode: {
+    token: {
+      type: String,
+      unique: true,
+      sparse: true,
+    },
+    dataUrl: String,
+    expiresAt: Date,
   },
   createdAt: {
     type: Date,

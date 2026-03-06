@@ -1,4 +1,6 @@
 import crypto from 'crypto';
+import { v4 as uuidv4 } from 'uuid';
+import QRCode from 'qrcode';
 import Event from '../models/Event.js';
 import Message from '../models/Message.js';
 import Member from '../models/Member.js';
@@ -6,7 +8,22 @@ import { branchFilter, resolveCreateBranch } from '../utils/branchQuery.js';
 
 export const getAllEvents = async (req, res) => {
   try {
-    const events = await Event.find(branchFilter(req))
+    const now = new Date();
+    const filter = branchFilter(req);
+
+    // Auto-transition: scheduled events whose endDate has passed → completed
+    await Event.updateMany(
+      { ...filter, status: 'scheduled', endDate: { $lt: now } },
+      { $set: { status: 'completed', updatedAt: now } }
+    );
+
+    // Auto-transition: scheduled events that have started but not ended → ongoing
+    await Event.updateMany(
+      { ...filter, status: 'scheduled', startDate: { $lte: now }, endDate: { $gte: now } },
+      { $set: { status: 'ongoing', updatedAt: now } }
+    );
+
+    const events = await Event.find(filter)
       .populate('organizerId', 'firstName lastName email')
       .sort({ startDate: -1 });
     res.json(events);
@@ -33,9 +50,46 @@ export const getEventById = async (req, res) => {
   }
 };
 
+function generateRecurringDates(startDate, endDate, pattern, recurrenceDay, recurrenceEndDate) {
+  const dates = [];
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+  const duration = end.getTime() - start.getTime();
+  const recurEnd = recurrenceEndDate ? new Date(recurrenceEndDate) : new Date(start);
+
+  if (!recurrenceEndDate) {
+    recurEnd.setDate(recurEnd.getDate() + 28); // Default 4 weeks ahead
+  }
+
+  let current = new Date(start);
+  // Move to the next occurrence of the recurrence day
+  if (recurrenceDay !== undefined) {
+    while (current.getDay() !== recurrenceDay) {
+      current.setDate(current.getDate() + 1);
+    }
+  }
+  // Skip the first date (it's the template event itself)
+  const increment = pattern === 'weekly' ? 7 : pattern === 'biweekly' ? 14 : 30;
+  current.setDate(current.getDate() + increment);
+
+  while (current <= recurEnd) {
+    const instanceStart = new Date(current);
+    const instanceEnd = new Date(instanceStart.getTime() + duration);
+    dates.push({ startDate: instanceStart, endDate: instanceEnd });
+
+    if (pattern === 'monthly') {
+      current.setMonth(current.getMonth() + 1);
+    } else {
+      current.setDate(current.getDate() + increment);
+    }
+  }
+
+  return dates;
+}
+
 export const createEvent = async (req, res) => {
   try {
-    const { title, description, eventType, startDate, endDate, location, organizerId, maxCapacity } = req.body;
+    const { title, description, eventType, startDate, endDate, location, organizerId, maxCapacity, isRecurring, recurrencePattern, recurrenceDay, recurrenceEndDate } = req.body;
 
     if (!title || !startDate || !endDate) {
       return res.status(400).json({ error: 'Title, start date, and end date are required' });
@@ -57,9 +111,36 @@ export const createEvent = async (req, res) => {
       location,
       organizerId: organizerId || req.user.userId,
       maxCapacity,
+      isRecurring: isRecurring || false,
+      recurrencePattern,
+      recurrenceDay,
+      recurrenceEndDate,
     });
 
     await event.save();
+
+    // Generate recurring instances
+    if (isRecurring && recurrencePattern) {
+      const dates = generateRecurringDates(startDate, endDate, recurrencePattern, recurrenceDay, recurrenceEndDate);
+      const instances = dates.map((d) => ({
+        organizationId: req.organizationId,
+        branchId,
+        title,
+        description,
+        eventType,
+        startDate: d.startDate,
+        endDate: d.endDate,
+        location,
+        organizerId: organizerId || req.user.userId,
+        maxCapacity,
+        parentEventId: event._id,
+      }));
+
+      if (instances.length > 0) {
+        await Event.insertMany(instances);
+      }
+    }
+
     res.status(201).json(event);
   } catch (error) {
     console.error('Error creating event:', error);
@@ -217,6 +298,140 @@ export const shareEventByEmail = async (req, res) => {
   }
 };
 
+export const generateInstances = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const event = await Event.findById(id);
+
+    if (!event) {
+      return res.status(404).json({ error: 'Event not found' });
+    }
+
+    if (!event.isRecurring || !event.recurrencePattern) {
+      return res.status(400).json({ error: 'Event is not a recurring event' });
+    }
+
+    // Find the latest existing instance to generate from
+    const latestInstance = await Event.findOne({ parentEventId: event._id })
+      .sort({ startDate: -1 });
+
+    const generateFrom = latestInstance ? latestInstance.startDate : event.startDate;
+    const duration = new Date(event.endDate).getTime() - new Date(event.startDate).getTime();
+
+    // Generate 4 more weeks from the latest instance
+    const endGenDate = new Date(generateFrom);
+    endGenDate.setDate(endGenDate.getDate() + 28);
+
+    const dates = generateRecurringDates(
+      generateFrom,
+      new Date(new Date(generateFrom).getTime() + duration),
+      event.recurrencePattern,
+      event.recurrenceDay,
+      event.recurrenceEndDate || endGenDate
+    );
+
+    const instances = dates.map((d) => ({
+      organizationId: event.organizationId,
+      branchId: event.branchId,
+      title: event.title,
+      description: event.description,
+      eventType: event.eventType,
+      startDate: d.startDate,
+      endDate: d.endDate,
+      location: event.location,
+      organizerId: event.organizerId,
+      maxCapacity: event.maxCapacity,
+      parentEventId: event._id,
+    }));
+
+    let created = 0;
+    if (instances.length > 0) {
+      const result = await Event.insertMany(instances);
+      created = result.length;
+    }
+
+    res.json({ message: `Generated ${created} event instance(s)` });
+  } catch (error) {
+    console.error('Error generating instances:', error);
+    res.status(500).json({ error: 'Failed to generate event instances' });
+  }
+};
+
+export const generateQRCode = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const event = await Event.findById(id);
+
+    if (!event) {
+      return res.status(404).json({ error: 'Event not found' });
+    }
+
+    // Generate or refresh QR code token
+    const token = uuidv4();
+    const expiresAt = new Date(event.endDate);
+    expiresAt.setHours(expiresAt.getHours() + 2); // Valid for 2 hours after event ends
+
+    // Generate QR code data URL
+    const qrData = JSON.stringify({
+      eventId: event._id,
+      token,
+      type: 'attendance',
+    });
+
+    const dataUrl = await QRCode.toDataURL(qrData, {
+      errorCorrectionLevel: 'M',
+      width: 400,
+      margin: 2,
+    });
+
+    event.qrCode = {
+      token,
+      dataUrl,
+      expiresAt,
+    };
+    event.updatedAt = new Date();
+    await event.save();
+
+    res.json({
+      token,
+      dataUrl,
+      expiresAt,
+    });
+  } catch (error) {
+    console.error('Error generating QR code:', error);
+    res.status(500).json({ error: 'Failed to generate QR code' });
+  }
+};
+
+export const getQRCode = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const event = await Event.findById(id);
+
+    if (!event) {
+      return res.status(404).json({ error: 'Event not found' });
+    }
+
+    if (!event.qrCode || !event.qrCode.token) {
+      return res.status(404).json({ error: 'QR code not generated for this event' });
+    }
+
+    // Check if QR code is expired
+    if (event.qrCode.expiresAt && new Date() > new Date(event.qrCode.expiresAt)) {
+      return res.status(410).json({ error: 'QR code has expired' });
+    }
+
+    res.json({
+      token: event.qrCode.token,
+      dataUrl: event.qrCode.dataUrl,
+      expiresAt: event.qrCode.expiresAt,
+    });
+  } catch (error) {
+    console.error('Error fetching QR code:', error);
+    res.status(500).json({ error: 'Failed to fetch QR code' });
+  }
+};
+
 export default {
   getAllEvents,
   getEventById,
@@ -227,4 +442,7 @@ export default {
   generateShareLink,
   getPublicEvent,
   shareEventByEmail,
+  generateInstances,
+  generateQRCode,
+  getQRCode,
 };

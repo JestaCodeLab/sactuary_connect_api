@@ -4,7 +4,8 @@ import {
   getDonationById,
   createDonation,
   updateDonation,
-  getDonationStats
+  getDonationStats,
+  sendReceipt
 } from '../controllers/donationController.js';
 import { authenticateToken, authorizeRole } from '../middleware/auth.js';
 import { resolveBranchContext } from '../middleware/branchContext.js';
@@ -16,5 +17,6 @@ router.get('/', authenticateToken, resolveBranchContext, authorizeRole(['admin',
 router.get('/:id', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), getDonationById);
 router.post('/', authenticateToken, resolveBranchContext, createDonation);
 router.put('/:id', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), updateDonation);
+router.post('/:id/receipt', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), sendReceipt);
 
 export default router;
