@@ -22,8 +22,8 @@ router.post('/', authenticateToken, resolveBranchContext, authorizeRole(['admin'
 router.put('/:id', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), updateAttendance);
 router.delete('/:id', authenticateToken, resolveBranchContext, authorizeRole(['admin']), deleteAttendance);
 
-// Check-in routes
-router.post('/check-in/qr', authenticateToken, checkInWithQR);
+// Check-in routes (QR check-in is public for guests/members)
+router.post('/check-in/qr', checkInWithQR);
 router.post('/check-in/manual', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), manualCheckIn);
 router.get('/event/:eventId/records', authenticateToken, resolveBranchContext, getEventAttendanceRecords);
 

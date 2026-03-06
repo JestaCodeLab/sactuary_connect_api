@@ -14,7 +14,7 @@ import { requireFeature } from '../middleware/featureGate.js';
 const router = express.Router();
 
 router.get('/', authenticateToken, resolveBranchContext, getAllMembers);
-router.get('/birthdays/upcoming', authenticateToken, resolveBranchContext, requireFeature('birthday_notifications'), getUpcomingBirthdays);
+router.get('/birthdays/upcoming', authenticateToken, resolveBranchContext, getUpcomingBirthdays);
 router.get('/:id', authenticateToken, resolveBranchContext, getMemberById);
 router.post('/', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), createMember);
 router.put('/:id', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), updateMember);

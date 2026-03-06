@@ -172,14 +172,33 @@ export const checkInWithQR = async (req, res) => {
       return res.status(410).json({ error: 'QR code has expired' });
     }
 
+    // Check if event has started
+    if (new Date() < new Date(event.startDate)) {
+      return res.status(400).json({ 
+        error: 'Check-in is not yet available. This event has not started yet.',
+        startDate: event.startDate 
+      });
+    }
+
     // Check if already checked in
-    const existingCheckIn = await AttendanceRecord.findOne({
-      eventId: event._id,
-      $or: [
-        memberId ? { memberId } : null,
-        userId ? { userId } : null,
-      ].filter(Boolean),
-    });
+    let existingCheckIn = null;
+    
+    if (memberId || userId) {
+      existingCheckIn = await AttendanceRecord.findOne({
+        eventId: event._id,
+        $or: [
+          memberId ? { memberId } : null,
+          userId ? { userId } : null,
+        ].filter(Boolean),
+      });
+    } else if (email) {
+      // For guests, check by email to prevent duplicate check-ins
+      existingCheckIn = await AttendanceRecord.findOne({
+        eventId: event._id,
+        email: email,
+        checkInMethod: 'guest',
+      });
+    }
 
     if (existingCheckIn) {
       return res.status(400).json({ 
@@ -202,8 +221,7 @@ export const checkInWithQR = async (req, res) => {
     } else if (userId) {
       checkInData.userId = userId;
     } else {
-      // Guest check-in
-      checkInData.checkInMethod = 'guest';
+      // Guest check-in via QR code
       checkInData.name = name;
       checkInData.email = email;
       checkInData.phone = phone;
