@@ -48,7 +48,7 @@ export const createDepartment = async (req, res) => {
       branchId,
       name,
       description,
-      leaderId,
+      leaderId: leaderId && leaderId.trim() ? leaderId : null,
     });
 
     const populated = await Department.findById(department._id)
@@ -58,7 +58,7 @@ export const createDepartment = async (req, res) => {
     res.status(201).json(populated);
   } catch (error) {
     console.error('Error creating department:', error);
-    res.status(500).json({ error: 'Failed to create department' });
+    res.status(500).json({ error: 'Failed to create department', details: error.message });
   }
 };
 

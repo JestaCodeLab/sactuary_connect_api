@@ -71,8 +71,15 @@ export const requireFeature = (featureKey) => {
       req.subscription = subscription;
       next();
     } catch (error) {
-      console.error('Feature gate error:', error);
-      res.status(500).json({ error: 'Failed to verify feature access' });
+      console.error('Feature gate error:', {
+        featureKey,
+        message: error.message,
+        stack: error.stack,
+      });
+      res.status(500).json({
+        error: 'Failed to verify feature access',
+        details: error.message,
+      });
     }
   };
 };

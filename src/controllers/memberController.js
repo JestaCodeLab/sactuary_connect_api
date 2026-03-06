@@ -43,7 +43,23 @@ const validateFamilyMembers = async (familyMembers, organizationId, currentMembe
 
 export const getAllMembers = async (req, res) => {
   try {
-    const members = await Member.find(branchFilter(req));
+    const { search } = req.query;
+    const filter = branchFilter(req);
+
+    // Add search filter if provided
+    if (search) {
+      const searchRegex = new RegExp(search, 'i');
+      filter.$or = [
+        { firstName: searchRegex },
+        { lastName: searchRegex },
+        { email: searchRegex },
+        { phone: searchRegex },
+      ];
+    }
+
+    const members = await Member.find(filter)
+      .populate('branchId', 'name')
+      .populate('departments', 'name');
     res.json(members);
   } catch (error) {
     console.error('Error fetching members:', error);
@@ -54,7 +70,9 @@ export const getAllMembers = async (req, res) => {
 export const getMemberById = async (req, res) => {
   try {
     const { id } = req.params;
-    const member = await Member.findById(id);
+    const member = await Member.findById(id)
+      .populate('branchId', 'name')
+      .populate('departments', 'name');
 
     if (!member) {
       return res.status(404).json({ error: 'Member not found' });
@@ -74,7 +92,7 @@ export const createMember = async (req, res) => {
       dateOfBirth, gender, maritalStatus,
       address, city, suburb, region, zipCode, country,
       baptismDate, membershipDate, memberStatus,
-      familyMembers, notes,
+      familyMembers, departments, notes,
     } = req.body;
 
     if (!firstName || !lastName || !email) {
@@ -115,10 +133,15 @@ export const createMember = async (req, res) => {
       membershipDate,
       memberStatus: memberStatus || 'active',
       familyMembers,
+      departments: departments && Array.isArray(departments) ? [...new Set(departments)] : [],
       notes,
     });
 
-    res.status(201).json(member);
+    const populated = await Member.findById(member._id)
+      .populate('branchId', 'name')
+      .populate('departments', 'name');
+
+    res.status(201).json(populated);
   } catch (error) {
     console.error('Error creating member:', error);
     res.status(500).json({ error: 'Failed to create member' });
@@ -148,7 +171,9 @@ export const updateMember = async (req, res) => {
 
     updates.updatedAt = Date.now();
 
-    const member = await Member.findByIdAndUpdate(id, updates, { new: true });
+    const member = await Member.findByIdAndUpdate(id, updates, { new: true })
+      .populate('branchId', 'name')
+      .populate('departments', 'name');
 
     if (!member) {
       return res.status(404).json({ error: 'Member not found' });

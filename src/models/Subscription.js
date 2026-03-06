@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { PLANS } from '../config/plans.js';
 
 const subscriptionSchema = new mongoose.Schema({
   organizationId: {
@@ -114,7 +115,6 @@ subscriptionSchema.virtual('daysRemaining').get(function() {
 
 // Method to check if a feature is available
 subscriptionSchema.methods.hasFeature = function(featureKey) {
-  const PLANS = require('../config/plans.js').default;
   const plan = PLANS[this.planId];
   if (!plan) return false;
 
@@ -124,7 +124,6 @@ subscriptionSchema.methods.hasFeature = function(featureKey) {
 
 // Method to check usage limits
 subscriptionSchema.methods.checkLimit = function(limitKey, currentValue) {
-  const PLANS = require('../config/plans.js').default;
   const plan = PLANS[this.planId];
   if (!plan) return false;
 
