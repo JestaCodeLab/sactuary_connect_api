@@ -1,4 +1,5 @@
 import Member from '../models/Member.js';
+import Department from '../models/Department.js';
 import { branchFilter, resolveCreateBranch } from '../utils/branchQuery.js';
 
 // Validate family members exist and belong to the same organization
@@ -113,6 +114,8 @@ export const createMember = async (req, res) => {
       }
     }
 
+    const uniqueDepartments = departments && Array.isArray(departments) ? [...new Set(departments)] : [];
+
     const member = await Member.create({
       organizationId: req.organizationId,
       branchId,
@@ -133,9 +136,17 @@ export const createMember = async (req, res) => {
       membershipDate,
       memberStatus: memberStatus || 'active',
       familyMembers,
-      departments: departments && Array.isArray(departments) ? [...new Set(departments)] : [],
+      departments: uniqueDepartments,
       notes,
     });
+
+    // Add member to selected departments
+    if (uniqueDepartments.length > 0) {
+      await Department.updateMany(
+        { _id: { $in: uniqueDepartments } },
+        { $addToSet: { members: member._id } }
+      );
+    }
 
     const populated = await Member.findById(member._id)
       .populate('branchId', 'name')
@@ -153,6 +164,12 @@ export const updateMember = async (req, res) => {
     const { id } = req.params;
     const updates = { ...req.body };
 
+    // Get the current member to check department changes
+    const currentMember = await Member.findById(id);
+    if (!currentMember) {
+      return res.status(404).json({ error: 'Member not found' });
+    }
+
     // Remove fields that shouldn't be updated
     delete updates.id;
     delete updates._id;
@@ -167,6 +184,34 @@ export const updateMember = async (req, res) => {
       } catch (validationError) {
         return res.status(400).json({ error: validationError.message });
       }
+    }
+
+    // Handle department changes
+    if (updates.departments !== undefined) {
+      const newDepartments = Array.isArray(updates.departments) ? [...new Set(updates.departments)] : [];
+      const oldDepartments = currentMember.departments || [];
+
+      // Find departments to remove from and add to
+      const depsToRemove = oldDepartments.filter(d => !newDepartments.includes(d.toString()));
+      const depsToAdd = newDepartments.filter(d => !oldDepartments.map(d => d.toString()).includes(d));
+
+      // Remove member from old departments
+      if (depsToRemove.length > 0) {
+        await Department.updateMany(
+          { _id: { $in: depsToRemove } },
+          { $pull: { members: id } }
+        );
+      }
+
+      // Add member to new departments
+      if (depsToAdd.length > 0) {
+        await Department.updateMany(
+          { _id: { $in: depsToAdd } },
+          { $addToSet: { members: id } }
+        );
+      }
+
+      updates.departments = newDepartments;
     }
 
     updates.updatedAt = Date.now();
@@ -200,6 +245,14 @@ export const deleteMember = async (req, res) => {
       { familyMembers: id },
       { $pull: { familyMembers: id } }
     );
+
+    // Remove member from all departments
+    if (member.departments && member.departments.length > 0) {
+      await Department.updateMany(
+        { _id: { $in: member.departments } },
+        { $pull: { members: id } }
+      );
+    }
 
     res.json({ message: 'Member deleted successfully' });
   } catch (error) {
