@@ -12,6 +12,7 @@ import {
   generateInstances,
   generateQRCode,
   getQRCode,
+  getEventByToken,
 } from '../controllers/eventController.js';
 import { authenticateToken, authorizeRole } from '../middleware/auth.js';
 import { resolveBranchContext } from '../middleware/branchContext.js';
@@ -21,6 +22,7 @@ const router = express.Router();
 
 // Public route (no auth required)
 router.get('/public/:shareToken', getPublicEvent);
+router.get('/check-in/:token', getEventByToken);
 
 // Authenticated routes
 router.get('/', authenticateToken, resolveBranchContext, getAllEvents);

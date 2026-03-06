@@ -371,14 +371,10 @@ export const generateQRCode = async (req, res) => {
     const expiresAt = new Date(event.endDate);
     expiresAt.setHours(expiresAt.getHours() + 2); // Valid for 2 hours after event ends
 
-    // Generate QR code data URL
-    const qrData = JSON.stringify({
-      eventId: event._id,
-      token,
-      type: 'attendance',
-    });
+    // Generate QR code with URL to public check-in page
+    const checkInUrl = `${process.env.CLIENT_URL || 'http://localhost:3000'}/check-in/${token}`;
 
-    const dataUrl = await QRCode.toDataURL(qrData, {
+    const dataUrl = await QRCode.toDataURL(checkInUrl, {
       errorCorrectionLevel: 'M',
       width: 400,
       margin: 2,
@@ -396,6 +392,7 @@ export const generateQRCode = async (req, res) => {
       token,
       dataUrl,
       expiresAt,
+      checkInUrl,
     });
   } catch (error) {
     console.error('Error generating QR code:', error);
@@ -421,14 +418,49 @@ export const getQRCode = async (req, res) => {
       return res.status(410).json({ error: 'QR code has expired' });
     }
 
+    const checkInUrl = `${process.env.CLIENT_URL || 'http://localhost:3000'}/check-in/${event.qrCode.token}`;
+
     res.json({
       token: event.qrCode.token,
       dataUrl: event.qrCode.dataUrl,
       expiresAt: event.qrCode.expiresAt,
+      checkInUrl,
     });
   } catch (error) {
     console.error('Error fetching QR code:', error);
     res.status(500).json({ error: 'Failed to fetch QR code' });
+  }
+};
+
+export const getEventByToken = async (req, res) => {
+  try {
+    const { token } = req.params;
+    
+    const event = await Event.findOne({ 'qrCode.token': token })
+      .select('title description startDate endDate location eventType qrCode organizationId branchId');
+
+    if (!event) {
+      return res.status(404).json({ error: 'Invalid or expired check-in token' });
+    }
+
+    // Check if QR code is expired
+    if (event.qrCode.expiresAt && new Date() > new Date(event.qrCode.expiresAt)) {
+      return res.status(410).json({ error: 'Check-in token has expired' });
+    }
+
+    res.json({
+      eventId: event._id,
+      title: event.title,
+      description: event.description,
+      startDate: event.startDate,
+      endDate: event.endDate,
+      location: event.location,
+      eventType: event.eventType,
+      token,
+    });
+  } catch (error) {
+    console.error('Error fetching event by token:', error);
+    res.status(500).json({ error: 'Failed to fetch event details' });
   }
 };
 
@@ -445,4 +477,5 @@ export default {
   generateInstances,
   generateQRCode,
   getQRCode,
+  getEventByToken,
 };
