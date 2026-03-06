@@ -43,14 +43,15 @@ const memberSchema = new mongoose.Schema({
     default: 'active',
   },
   // Family Information
-  familyName: String,
-  familyRelationship: {
-    type: String,
-    enum: ['head', 'spouse', 'child', 'other'],
-  },
   familyMembers: [{
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Member',
+    memberId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Member',
+    },
+    relationship: {
+      type: String,
+      enum: ['mother', 'father', 'spouse', 'child', 'sibling', 'grandparent', 'other'],
+    },
   }],
   // Notes
   notes: String,

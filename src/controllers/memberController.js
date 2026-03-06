@@ -1,6 +1,46 @@
 import Member from '../models/Member.js';
 import { branchFilter, resolveCreateBranch } from '../utils/branchQuery.js';
 
+// Validate family members exist and belong to the same organization
+const validateFamilyMembers = async (familyMembers, organizationId, currentMemberId) => {
+  if (!familyMembers || familyMembers.length === 0) {
+    return true;
+  }
+
+  if (!Array.isArray(familyMembers)) {
+    throw new Error('familyMembers must be an array');
+  }
+
+  // Validate structure and relationships
+  const memberIds = new Set();
+  for (const familyMember of familyMembers) {
+    if (!familyMember.memberId || !familyMember.relationship) {
+      throw new Error('Each family member must have memberId and relationship');
+    }
+
+    if (memberIds.has(familyMember.memberId)) {
+      throw new Error('Duplicate family member IDs');
+    }
+    memberIds.add(familyMember.memberId);
+
+    if (familyMember.memberId === currentMemberId) {
+      throw new Error('Cannot add member as their own family member');
+    }
+  }
+
+  // Validate all members exist and belong to same organization
+  const members = await Member.find({
+    _id: { $in: Array.from(memberIds) },
+    organizationId,
+  });
+
+  if (members.length !== memberIds.size) {
+    throw new Error('One or more family members not found or belong to a different organization');
+  }
+
+  return true;
+};
+
 export const getAllMembers = async (req, res) => {
   try {
     const members = await Member.find(branchFilter(req));
@@ -34,7 +74,7 @@ export const createMember = async (req, res) => {
       dateOfBirth, gender, maritalStatus,
       address, city, suburb, region, zipCode, country,
       baptismDate, membershipDate, memberStatus,
-      familyName, familyRelationship, familyMembers, notes,
+      familyMembers, notes,
     } = req.body;
 
     if (!firstName || !lastName || !email) {
@@ -44,6 +84,15 @@ export const createMember = async (req, res) => {
     const branchId = resolveCreateBranch(req);
     if (!branchId) {
       return res.status(400).json({ error: 'Branch is required' });
+    }
+
+    // Validate family members before creating
+    if (familyMembers && familyMembers.length > 0) {
+      try {
+        await validateFamilyMembers(familyMembers, req.organizationId, null);
+      } catch (validationError) {
+        return res.status(400).json({ error: validationError.message });
+      }
     }
 
     const member = await Member.create({
@@ -65,8 +114,6 @@ export const createMember = async (req, res) => {
       baptismDate,
       membershipDate,
       memberStatus: memberStatus || 'active',
-      familyName,
-      familyRelationship,
       familyMembers,
       notes,
     });
@@ -89,6 +136,15 @@ export const updateMember = async (req, res) => {
     delete updates.userId;
     delete updates.organizationId;
     delete updates.branchId;
+
+    // Validate family members if being updated
+    if (updates.familyMembers) {
+      try {
+        await validateFamilyMembers(updates.familyMembers, req.organizationId, id);
+      } catch (validationError) {
+        return res.status(400).json({ error: validationError.message });
+      }
+    }
 
     updates.updatedAt = Date.now();
 
@@ -113,6 +169,12 @@ export const deleteMember = async (req, res) => {
     if (!member) {
       return res.status(404).json({ error: 'Member not found' });
     }
+
+    // Remove this member from all other members' familyMembers arrays
+    await Member.updateMany(
+      { familyMembers: id },
+      { $pull: { familyMembers: id } }
+    );
 
     res.json({ message: 'Member deleted successfully' });
   } catch (error) {
