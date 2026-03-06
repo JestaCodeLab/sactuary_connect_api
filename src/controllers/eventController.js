@@ -36,11 +36,41 @@ export const getAllEvents = async (req, res) => {
 export const getEventById = async (req, res) => {
   try {
     const { id } = req.params;
+    const now = new Date();
+    
     const event = await Event.findById(id)
       .populate('organizerId', 'firstName lastName email');
 
     if (!event) {
       return res.status(404).json({ error: 'Event not found' });
+    }
+
+    // Auto-transition event status based on current time
+    let statusChanged = false;
+    
+    if (event.status === 'scheduled') {
+      // If event has ended, mark as completed
+      if (event.endDate < now) {
+        event.status = 'completed';
+        event.updatedAt = now;
+        statusChanged = true;
+      }
+      // If event has started but not ended, mark as ongoing
+      else if (event.startDate <= now && event.endDate >= now) {
+        event.status = 'ongoing';
+        event.updatedAt = now;
+        statusChanged = true;
+      }
+    }
+    // Transition ongoing events to completed when they end
+    else if (event.status === 'ongoing' && event.endDate < now) {
+      event.status = 'completed';
+      event.updatedAt = now;
+      statusChanged = true;
+    }
+
+    if (statusChanged) {
+      await event.save();
     }
 
     res.json(event);
@@ -435,9 +465,10 @@ export const getQRCode = async (req, res) => {
 export const getEventByToken = async (req, res) => {
   try {
     const { token } = req.params;
+    const now = new Date();
     
     const event = await Event.findOne({ 'qrCode.token': token })
-      .select('title description startDate endDate location eventType qrCode organizationId branchId');
+      .select('title description startDate endDate location eventType qrCode organizationId branchId status');
 
     if (!event) {
       return res.status(404).json({ error: 'Invalid or expired check-in token' });
@@ -448,6 +479,34 @@ export const getEventByToken = async (req, res) => {
       return res.status(410).json({ error: 'Check-in token has expired' });
     }
 
+    // Auto-transition event status based on current time
+    let statusChanged = false;
+    
+    if (event.status === 'scheduled') {
+      // If event has ended, mark as completed
+      if (event.endDate < now) {
+        event.status = 'completed';
+        event.updatedAt = now;
+        statusChanged = true;
+      }
+      // If event has started but not ended, mark as ongoing
+      else if (event.startDate <= now && event.endDate >= now) {
+        event.status = 'ongoing';
+        event.updatedAt = now;
+        statusChanged = true;
+      }
+    }
+    // Transition ongoing events to completed when they end
+    else if (event.status === 'ongoing' && event.endDate < now) {
+      event.status = 'completed';
+      event.updatedAt = now;
+      statusChanged = true;
+    }
+
+    if (statusChanged) {
+      await event.save();
+    }
+
     res.json({
       eventId: event._id,
       title: event.title,
@@ -456,6 +515,7 @@ export const getEventByToken = async (req, res) => {
       endDate: event.endDate,
       location: event.location,
       eventType: event.eventType,
+      status: event.status,
       token,
     });
   } catch (error) {
