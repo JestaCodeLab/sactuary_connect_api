@@ -6,10 +6,49 @@ import { branchFilter, resolveCreateBranch } from '../utils/branchQuery.js';
 
 export const getAllAttendance = async (req, res) => {
   try {
-    const records = await Attendance.find(branchFilter(req))
-      .populate('eventId', 'title eventType')
-      .sort({ date: -1 });
-    res.json(records);
+    // Get recent individual check-ins (last 50) grouped by event
+    const recentCheckIns = await AttendanceRecord.find(branchFilter(req))
+      .populate('eventId', 'title startDate eventType')
+      .populate('memberId', 'firstName lastName')
+      .populate('userId', 'firstName lastName')
+      .sort({ checkInTime: -1 })
+      .limit(50);
+
+    // Group by event and count
+    const eventMap = new Map();
+    
+    recentCheckIns.forEach(record => {
+      const eventId = record.eventId?._id?.toString();
+      if (!eventId) return;
+      
+      if (!eventMap.has(eventId)) {
+        eventMap.set(eventId, {
+          eventId: record.eventId._id,
+          eventTitle: record.eventId.title,
+          eventDate: record.eventId.startDate,
+          eventType: record.eventId.eventType,
+          checkIns: [],
+          totalCheckIns: 0,
+          members: 0,
+          guests: 0,
+          qrCheckIns: 0,
+        });
+      }
+      
+      const event = eventMap.get(eventId);
+      event.totalCheckIns++;
+      event.checkIns.push(record);
+      
+      if (record.memberId) event.members++;
+      if (record.checkInMethod === 'guest') event.guests++;
+      if (record.checkInMethod === 'qr') event.qrCheckIns++;
+    });
+
+    const groupedRecords = Array.from(eventMap.values())
+      .sort((a, b) => new Date(b.eventDate).getTime() - new Date(a.eventDate).getTime())
+      .slice(0, 20); // Return top 20 events
+
+    res.json(groupedRecords);
   } catch (error) {
     console.error('Error fetching attendance:', error);
     res.status(500).json({ error: 'Failed to fetch attendance records' });
@@ -103,48 +142,41 @@ export const deleteAttendance = async (req, res) => {
 
 export const getAttendanceStats = async (req, res) => {
   try {
-    const stats = await Attendance.aggregate([
-      { $match: branchFilter(req) },
-      {
-        $group: {
-          _id: null,
-          totalRecords: { $sum: 1 },
-          totalPresent: { $sum: '$totalPresent' },
-          totalAbsent: { $sum: '$totalAbsent' },
-        },
-      },
-      {
-        $project: {
-          _id: 0,
-          totalRecords: 1,
-          totalPresent: 1,
-          totalAbsent: 1,
-          averageRate: {
-            $cond: [
-              { $eq: [{ $add: ['$totalPresent', '$totalAbsent'] }, 0] },
-              0,
-              {
-                $round: [
-                  {
-                    $multiply: [
-                      { $divide: ['$totalPresent', { $add: ['$totalPresent', '$totalAbsent'] }] },
-                      100,
-                    ],
-                  },
-                  1,
-                ],
-              },
-            ],
-          },
-        },
-      },
-    ]);
-
-    const lastRecord = await Attendance.findOne(branchFilter(req)).sort({ date: -1 });
+    // Get stats from AttendanceRecord (individual check-ins)
+    const filter = branchFilter(req);
+    
+    // Total check-ins
+    const totalCheckIns = await AttendanceRecord.countDocuments(filter);
+    
+    // Check-ins by method
+    const qrCheckIns = await AttendanceRecord.countDocuments({ ...filter, checkInMethod: 'qr' });
+    const manualCheckIns = await AttendanceRecord.countDocuments({ ...filter, checkInMethod: 'manual' });
+    const guestCheckIns = await AttendanceRecord.countDocuments({ ...filter, checkInMethod: 'guest' });
+    
+    // Unique events with check-ins
+    const eventsWithCheckIns = await AttendanceRecord.distinct('eventId', filter);
+    
+    // Recent check-ins (last 7 days)
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    const recentCheckIns = await AttendanceRecord.countDocuments({
+      ...filter,
+      checkInTime: { $gte: sevenDaysAgo },
+    });
+    
+    // Last check-in time
+    const lastCheckIn = await AttendanceRecord.findOne(filter)
+      .sort({ checkInTime: -1 })
+      .select('checkInTime');
 
     res.json({
-      ...(stats[0] || { totalRecords: 0, averageRate: 0, totalPresent: 0, totalAbsent: 0 }),
-      lastAttendance: lastRecord ? lastRecord.totalPresent : 0,
+      totalCheckIns,
+      qrCheckIns,
+      manualCheckIns,
+      guestCheckIns,
+      eventsWithCheckIns: eventsWithCheckIns.length,
+      recentCheckIns,
+      lastCheckInTime: lastCheckIn?.checkInTime || null,
     });
   } catch (error) {
     console.error('Error fetching attendance stats:', error);

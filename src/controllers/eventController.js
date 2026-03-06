@@ -11,15 +11,33 @@ export const getAllEvents = async (req, res) => {
     const now = new Date();
     const filter = branchFilter(req);
 
+    // Date range filters from query params
+    const { startDate, endDate, status } = req.query;
+    
+    if (startDate) {
+      filter.startDate = { ...filter.startDate, $gte: new Date(startDate) };
+    }
+    
+    if (endDate) {
+      const endDateTime = new Date(endDate);
+      endDateTime.setHours(23, 59, 59, 999); // Include entire end date
+      filter.startDate = { ...filter.startDate, $lte: endDateTime };
+    }
+
+    // Status filter
+    if (status && ['scheduled', 'ongoing', 'completed', 'cancelled'].includes(status)) {
+      filter.status = status;
+    }
+
     // Auto-transition: scheduled events whose endDate has passed → completed
     await Event.updateMany(
-      { ...filter, status: 'scheduled', endDate: { $lt: now } },
+      { ...branchFilter(req), status: 'scheduled', endDate: { $lt: now } },
       { $set: { status: 'completed', updatedAt: now } }
     );
 
     // Auto-transition: scheduled events that have started but not ended → ongoing
     await Event.updateMany(
-      { ...filter, status: 'scheduled', startDate: { $lte: now }, endDate: { $gte: now } },
+      { ...branchFilter(req), status: 'scheduled', startDate: { $lte: now }, endDate: { $gte: now } },
       { $set: { status: 'ongoing', updatedAt: now } }
     );
 
