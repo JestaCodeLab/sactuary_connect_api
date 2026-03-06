@@ -324,6 +324,181 @@ export const getUpcomingBirthdays = async (req, res) => {
   }
 };
 
+// Export members as CSV or JSON (for PDF generation on frontend)
+export const exportMembers = async (req, res) => {
+  try {
+    const { format = 'csv', startDate, endDate, period } = req.query;
+    const filter = branchFilter(req);
+
+    // Calculate date range based on period
+    if (period === 'monthly') {
+      const now = new Date();
+      filter.createdAt = {
+        $gte: new Date(now.getFullYear(), now.getMonth(), 1),
+        $lte: new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999),
+      };
+    } else if (startDate || endDate) {
+      filter.createdAt = {};
+      if (startDate) {
+        filter.createdAt.$gte = new Date(startDate);
+      }
+      if (endDate) {
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+        filter.createdAt.$lte = end;
+      }
+    }
+
+    const members = await Member.find(filter)
+      .populate('branchId', 'name')
+      .populate('departments', 'name')
+      .sort({ firstName: 1, lastName: 1 });
+
+    if (format === 'csv') {
+      const csvHeaders = [
+        'First Name', 'Last Name', 'Email', 'Phone', 'Gender', 
+        'Date of Birth', 'Marital Status', 'Address', 'City', 
+        'Suburb', 'Region', 'Zip Code', 'Country', 'Baptism Date',
+        'Membership Date', 'Status', 'Branch', 'Departments', 'Created At'
+      ].join(',');
+
+      const csvRows = members.map(m => {
+        const branchName = m.branchId && typeof m.branchId === 'object' ? m.branchId.name : '';
+        const deptNames = m.departments?.map(d => typeof d === 'object' ? d.name : d).join('; ') || '';
+        return [
+          m.firstName,
+          m.lastName,
+          m.email,
+          m.phone || '',
+          m.gender || '',
+          m.dateOfBirth ? new Date(m.dateOfBirth).toISOString().split('T')[0] : '',
+          m.maritalStatus || '',
+          m.address || '',
+          m.city || '',
+          m.suburb || '',
+          m.region || '',
+          m.zipCode || '',
+          m.country || '',
+          m.baptismDate ? new Date(m.baptismDate).toISOString().split('T')[0] : '',
+          m.membershipDate ? new Date(m.membershipDate).toISOString().split('T')[0] : '',
+          m.memberStatus,
+          branchName,
+          deptNames,
+          new Date(m.createdAt).toISOString().split('T')[0],
+        ].map(val => `"${String(val).replace(/"/g, '""')}"`).join(',');
+      });
+
+      const csv = [csvHeaders, ...csvRows].join('\n');
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', 'attachment; filename=members-export.csv');
+      return res.send(csv);
+    }
+
+    // Return JSON for PDF generation on frontend
+    res.json(members);
+  } catch (error) {
+    console.error('Error exporting members:', error);
+    res.status(500).json({ error: 'Failed to export members' });
+  }
+};
+
+// Import members from CSV
+export const importMembers = async (req, res) => {
+  try {
+    const { members: membersData, branchId } = req.body;
+
+    if (!Array.isArray(membersData) || membersData.length === 0) {
+      return res.status(400).json({ error: 'No members data provided' });
+    }
+
+    const results = {
+      success: 0,
+      failed: 0,
+      errors: [],
+    };
+
+    for (const memberData of membersData) {
+      try {
+        // Validate required fields
+        if (!memberData.firstName || !memberData.lastName || !memberData.email) {
+          results.failed++;
+          results.errors.push(`Missing required fields for: ${memberData.email || 'unknown'}`);
+          continue;
+        }
+
+        // Check if member with email already exists
+        const existingMember = await Member.findOne({ 
+          email: memberData.email.toLowerCase(),
+          organizationId: req.organizationId,
+        });
+
+        if (existingMember) {
+          results.failed++;
+          results.errors.push(`Member with email ${memberData.email} already exists`);
+          continue;
+        }
+
+        const newMember = new Member({
+          firstName: memberData.firstName,
+          lastName: memberData.lastName,
+          email: memberData.email.toLowerCase(),
+          phone: memberData.phone || null,
+          gender: memberData.gender || null,
+          dateOfBirth: memberData.dateOfBirth ? new Date(memberData.dateOfBirth) : null,
+          maritalStatus: memberData.maritalStatus || null,
+          address: memberData.address || null,
+          city: memberData.city || null,
+          suburb: memberData.suburb || null,
+          region: memberData.region || null,
+          zipCode: memberData.zipCode || null,
+          country: memberData.country || null,
+          baptismDate: memberData.baptismDate ? new Date(memberData.baptismDate) : null,
+          membershipDate: memberData.membershipDate ? new Date(memberData.membershipDate) : null,
+          memberStatus: memberData.memberStatus || 'active',
+          organizationId: req.organizationId,
+          branchId: branchId || req.branchId,
+        });
+
+        await newMember.save();
+        results.success++;
+      } catch (memberError) {
+        results.failed++;
+        results.errors.push(`Error importing ${memberData.email}: ${memberError.message}`);
+      }
+    }
+
+    res.json({
+      message: `Imported ${results.success} members, ${results.failed} failed`,
+      ...results,
+    });
+  } catch (error) {
+    console.error('Error importing members:', error);
+    res.status(500).json({ error: 'Failed to import members' });
+  }
+};
+
+// Get import template (CSV headers)
+export const getImportTemplate = async (req, res) => {
+  const headers = [
+    'firstName', 'lastName', 'email', 'phone', 'gender',
+    'dateOfBirth', 'maritalStatus', 'address', 'city',
+    'suburb', 'region', 'zipCode', 'country', 'baptismDate',
+    'membershipDate', 'memberStatus'
+  ];
+  
+  const sampleRow = [
+    'John', 'Doe', 'john.doe@example.com', '+1234567890', 'male',
+    '1990-01-15', 'married', '123 Main St', 'New York',
+    'Manhattan', 'NY', '10001', 'USA', '2020-06-15',
+    '2019-01-01', 'active'
+  ];
+
+  const csv = [headers.join(','), sampleRow.join(',')].join('\n');
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', 'attachment; filename=member-import-template.csv');
+  res.send(csv);
+};
+
 export default {
   getAllMembers,
   getMemberById,
@@ -331,4 +506,7 @@ export default {
   updateMember,
   deleteMember,
   getUpcomingBirthdays,
+  exportMembers,
+  importMembers,
+  getImportTemplate,
 };
