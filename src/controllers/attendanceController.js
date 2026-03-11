@@ -1,8 +1,17 @@
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { v4 as uuidv4 } from 'uuid';
+import PDFDocument from 'pdfkit';
 import Attendance from '../models/Attendance.js';
 import AttendanceRecord from '../models/AttendanceRecord.js';
 import Event from '../models/Event.js';
 import Member from '../models/Member.js';
 import { branchFilter, resolveCreateBranch } from '../utils/branchQuery.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const EXPORTS_DIR = path.join(__dirname, '../../exports');
 
 export const getAllAttendance = async (req, res) => {
   try {
@@ -367,6 +376,162 @@ export const manualCheckIn = async (req, res) => {
   }
 };
 
+// Export attendance report for a specific event as CSV or PDF
+export const exportEventAttendance = async (req, res) => {
+  try {
+    const { eventId } = req.params;
+    const { format = 'csv' } = req.query;
+
+    const event = await Event.findById(eventId);
+    if (!event) {
+      return res.status(404).json({ error: 'Event not found' });
+    }
+
+    const records = await AttendanceRecord.find({ eventId })
+      .populate('memberId', 'firstName lastName email phone')
+      .populate('userId', 'firstName lastName email')
+      .sort({ checkInTime: 1 });
+
+    const stats = {
+      total: records.length,
+      members: records.filter(r => r.memberId).length,
+      guests: records.filter(r => r.checkInMethod === 'guest').length,
+      qrCheckIns: records.filter(r => r.checkInMethod === 'qr').length,
+      manualCheckIns: records.filter(r => r.checkInMethod === 'manual').length,
+    };
+
+    // Resolve name, type, and contact for each record
+    const resolvedRecords = records.map(r => {
+      let name = 'Unknown';
+      let type = 'Guest';
+      let contact = '';
+
+      if (r.memberId) {
+        name = `${r.memberId.firstName} ${r.memberId.lastName}`;
+        type = 'Member';
+        contact = r.memberId.email || r.memberId.phone || '';
+      } else if (r.userId) {
+        name = `${r.userId.firstName} ${r.userId.lastName}`;
+        type = 'User';
+        contact = r.userId.email || '';
+      } else if (r.name) {
+        name = r.name;
+        type = 'Guest';
+        contact = r.email || r.phone || '';
+      }
+
+      return {
+        name,
+        type,
+        method: r.checkInMethod === 'qr' ? 'QR' : r.checkInMethod === 'manual' ? 'Manual' : 'Guest',
+        checkInTime: new Date(r.checkInTime).toLocaleString(),
+        contact,
+      };
+    });
+
+    // Ensure exports directory exists
+    if (!fs.existsSync(EXPORTS_DIR)) {
+      fs.mkdirSync(EXPORTS_DIR, { recursive: true });
+    }
+
+    const fileId = uuidv4();
+    const baseUrl = process.env.API_URL || `${req.protocol}://${req.get('host')}`;
+
+    if (format === 'csv') {
+      const csvHeaders = ['Name', 'Type', 'Check-In Method', 'Check-In Time', 'Contact'].join(',');
+      const csvRows = resolvedRecords.map(r =>
+        [r.name, r.type, r.method, r.checkInTime, r.contact]
+          .map(val => `"${String(val).replace(/"/g, '""')}"`)
+          .join(',')
+      );
+
+      const csv = [csvHeaders, ...csvRows].join('\n');
+      const fileName = `attendance-${eventId}-${fileId}.csv`;
+      const filePath = path.join(EXPORTS_DIR, fileName);
+      fs.writeFileSync(filePath, csv);
+
+      return res.json({ downloadUrl: `${baseUrl}/exports/${fileName}` });
+    }
+
+    // PDF generation
+    const fileName = `attendance-${eventId}-${fileId}.pdf`;
+    const filePath = path.join(EXPORTS_DIR, fileName);
+
+    await new Promise((resolve, reject) => {
+      const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margin: 30 });
+      const writeStream = fs.createWriteStream(filePath);
+      doc.pipe(writeStream);
+
+      // Title
+      doc.fontSize(18).font('Helvetica-Bold').text('Attendance Report', { align: 'center' });
+      doc.fontSize(12).font('Helvetica').text(event.title, { align: 'center' });
+      doc.fontSize(10).text(
+        `${new Date(event.startDate).toLocaleDateString()} — ${new Date(event.endDate).toLocaleDateString()}`,
+        { align: 'center' }
+      );
+      doc.moveDown(0.5);
+
+      // Summary stats
+      doc.fontSize(10).font('Helvetica-Bold').text('Summary');
+      doc.font('Helvetica').fontSize(9);
+      doc.text(`Total Check-Ins: ${stats.total}    Members: ${stats.members}    Guests: ${stats.guests}    QR: ${stats.qrCheckIns}    Manual: ${stats.manualCheckIns}`);
+      doc.moveDown(1);
+
+      // Table
+      const headers = ['Name', 'Type', 'Method', 'Check-In Time', 'Contact'];
+      const colWidths = [180, 70, 80, 170, 180];
+      const tableLeft = 30;
+      const rowHeight = 20;
+
+      let y = doc.y;
+
+      const drawHeaderRow = () => {
+        doc.fontSize(9).font('Helvetica-Bold');
+        doc.rect(tableLeft, y, colWidths.reduce((a, b) => a + b, 0), rowHeight).fill('#f4f4f4').stroke('#dddddd');
+        doc.fillColor('#000000');
+        let x = tableLeft + 5;
+        headers.forEach((header, i) => {
+          doc.text(header, x, y + 5, { width: colWidths[i] - 10, lineBreak: false });
+          x += colWidths[i];
+        });
+        y += rowHeight;
+        doc.font('Helvetica').fontSize(8);
+      };
+
+      drawHeaderRow();
+
+      resolvedRecords.forEach((r, rowIndex) => {
+        if (y + rowHeight > doc.page.height - 30) {
+          doc.addPage({ size: 'A4', layout: 'landscape', margin: 30 });
+          y = 30;
+          drawHeaderRow();
+        }
+
+        const bgColor = rowIndex % 2 === 0 ? '#f9f9f9' : '#ffffff';
+        doc.rect(tableLeft, y, colWidths.reduce((a, b) => a + b, 0), rowHeight).fill(bgColor).stroke('#dddddd');
+        doc.fillColor('#000000');
+
+        const rowData = [r.name, r.type, r.method, r.checkInTime, r.contact];
+        let x = tableLeft + 5;
+        rowData.forEach((cell, i) => {
+          doc.text(cell, x, y + 5, { width: colWidths[i] - 10, lineBreak: false });
+          x += colWidths[i];
+        });
+        y += rowHeight;
+      });
+
+      doc.end();
+      writeStream.on('finish', resolve);
+      writeStream.on('error', reject);
+    });
+
+    res.json({ downloadUrl: `${baseUrl}/exports/${fileName}` });
+  } catch (error) {
+    console.error('Error exporting event attendance:', error);
+    res.status(500).json({ error: 'Failed to export attendance report' });
+  }
+};
+
 export default {
   getAllAttendance,
   getAttendanceById,
@@ -377,4 +542,5 @@ export default {
   checkInWithQR,
   getEventAttendanceRecords,
   manualCheckIn,
+  exportEventAttendance,
 };

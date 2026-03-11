@@ -9,6 +9,7 @@ import {
   checkInWithQR,
   getEventAttendanceRecords,
   manualCheckIn,
+  exportEventAttendance,
 } from '../controllers/attendanceController.js';
 import { authenticateToken, authorizeRole } from '../middleware/auth.js';
 import { resolveBranchContext } from '../middleware/branchContext.js';
@@ -18,6 +19,7 @@ const router = express.Router();
 // Static routes must come before /:id to avoid conflicts
 router.get('/stats/summary', authenticateToken, resolveBranchContext, getAttendanceStats);
 router.get('/event/:eventId/records', authenticateToken, resolveBranchContext, getEventAttendanceRecords);
+router.get('/event/:eventId/export', authenticateToken, resolveBranchContext, exportEventAttendance);
 
 // Check-in routes (QR check-in is public for guests/members)
 router.post('/check-in/qr', checkInWithQR);

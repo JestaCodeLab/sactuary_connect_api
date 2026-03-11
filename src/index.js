@@ -3,7 +3,13 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import dotenv from 'dotenv';
+import { fileURLToPath } from 'url';
+import path from 'path';
 import connectDB from './config/database.js';
+import { cleanupExports } from './utils/exportCleanup.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 import errorHandler from './middleware/errorHandler.js';
 import authRoutes from './routes/authRoutes.js';
 import memberRoutes from './routes/memberRoutes.js';
@@ -38,6 +44,9 @@ app.use(cors({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Serve export files statically
+app.use('/exports', express.static(path.join(__dirname, '../exports')));
+
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/members', memberRoutes);
@@ -65,6 +74,10 @@ app.use(errorHandler);
 const startServer = async () => {
   try {
     await connectDB();
+    // Clean up old export files every hour
+    cleanupExports();
+    setInterval(cleanupExports, 60 * 60 * 1000);
+
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
       console.log(`Environment: ${process.env.NODE_ENV}`);
