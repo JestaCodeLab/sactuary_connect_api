@@ -26,11 +26,11 @@ const memberSchema = new mongoose.Schema({
     type: String,
     required: true,
   },
-  email: {
+  email: String,
+  phone: {
     type: String,
     required: true,
   },
-  phone: String,
   dateOfBirth: Date,
   gender: String,
   maritalStatus: String,
@@ -71,5 +71,6 @@ const memberSchema = new mongoose.Schema({
 });
 
 memberSchema.index({ organizationId: 1, branchId: 1 });
+memberSchema.index({ organizationId: 1, phone: 1 }, { unique: true });
 
 export default mongoose.model('Member', memberSchema);

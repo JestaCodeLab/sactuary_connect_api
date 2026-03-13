@@ -7,6 +7,7 @@ import { fileURLToPath } from 'url';
 import path from 'path';
 import connectDB from './config/database.js';
 import { cleanupExports } from './utils/exportCleanup.js';
+import { startRecurringQRJob } from './jobs/recurringQRJob.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -24,6 +25,7 @@ import departmentRoutes from './routes/departmentRoutes.js';
 import expenseRoutes from './routes/expenseRoutes.js';
 import financeRoutes from './routes/financeRoutes.js';
 import userBranchRoutes from './routes/userBranchRoutes.js';
+import smsRoutes from './routes/smsRoutes.js';
 
 dotenv.config();
 
@@ -61,6 +63,7 @@ app.use('/api/departments', departmentRoutes);
 app.use('/api/expenses', expenseRoutes);
 app.use('/api/finance', financeRoutes);
 app.use('/api', userBranchRoutes);
+app.use('/api/sms', smsRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -77,6 +80,9 @@ const startServer = async () => {
     // Clean up old export files every hour
     cleanupExports();
     setInterval(cleanupExports, 60 * 60 * 1000);
+
+    // Start recurring event QR code auto-generation job
+    startRecurringQRJob();
 
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);

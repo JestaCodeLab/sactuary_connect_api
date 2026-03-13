@@ -2,9 +2,11 @@ import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import QRCode from 'qrcode';
 import Event from '../models/Event.js';
+import AttendanceRecord from '../models/AttendanceRecord.js';
 import Message from '../models/Message.js';
 import Member from '../models/Member.js';
 import { branchFilter, resolveCreateBranch } from '../utils/branchQuery.js';
+import { computeOccurrences, getNextOccurrence, getCurrentOccurrence } from '../utils/occurrenceHelper.js';
 
 export const getAllEvents = async (req, res) => {
   try {
@@ -29,16 +31,22 @@ export const getAllEvents = async (req, res) => {
       filter.status = status;
     }
 
-    // Auto-transition: scheduled events whose endDate has passed → completed
+    // Auto-transition: non-recurring scheduled events whose endDate has passed → completed
     await Event.updateMany(
-      { ...branchFilter(req), status: 'scheduled', endDate: { $lt: now } },
+      { ...branchFilter(req), status: 'scheduled', endDate: { $lt: now }, isRecurring: { $ne: true } },
       { $set: { status: 'completed', updatedAt: now } }
     );
 
-    // Auto-transition: scheduled events that have started but not ended → ongoing
+    // Auto-transition: non-recurring scheduled events that have started but not ended → ongoing
     await Event.updateMany(
-      { ...branchFilter(req), status: 'scheduled', startDate: { $lte: now }, endDate: { $gte: now } },
+      { ...branchFilter(req), status: 'scheduled', startDate: { $lte: now }, endDate: { $gte: now }, isRecurring: { $ne: true } },
       { $set: { status: 'ongoing', updatedAt: now } }
+    );
+
+    // Auto-transition: recurring events whose recurrenceEndDate has passed → completed
+    await Event.updateMany(
+      { ...branchFilter(req), isRecurring: true, status: 'scheduled', recurrenceEndDate: { $lt: now, $exists: true } },
+      { $set: { status: 'completed', updatedAt: now } }
     );
 
     const events = await Event.find(filter)
@@ -65,26 +73,30 @@ export const getEventById = async (req, res) => {
 
     // Auto-transition event status based on current time
     let statusChanged = false;
-    
-    if (event.status === 'scheduled') {
-      // If event has ended, mark as completed
-      if (event.endDate < now) {
+
+    if (event.isRecurring) {
+      // Recurring events are completed only when the series ends
+      if (event.status === 'scheduled' && event.recurrenceEndDate && event.recurrenceEndDate < now) {
         event.status = 'completed';
         event.updatedAt = now;
         statusChanged = true;
       }
-      // If event has started but not ended, mark as ongoing
-      else if (event.startDate <= now && event.endDate >= now) {
-        event.status = 'ongoing';
+    } else {
+      if (event.status === 'scheduled') {
+        if (event.endDate < now) {
+          event.status = 'completed';
+          event.updatedAt = now;
+          statusChanged = true;
+        } else if (event.startDate <= now && event.endDate >= now) {
+          event.status = 'ongoing';
+          event.updatedAt = now;
+          statusChanged = true;
+        }
+      } else if (event.status === 'ongoing' && event.endDate < now) {
+        event.status = 'completed';
         event.updatedAt = now;
         statusChanged = true;
       }
-    }
-    // Transition ongoing events to completed when they end
-    else if (event.status === 'ongoing' && event.endDate < now) {
-      event.status = 'completed';
-      event.updatedAt = now;
-      statusChanged = true;
     }
 
     if (statusChanged) {
@@ -97,43 +109,6 @@ export const getEventById = async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch event' });
   }
 };
-
-function generateRecurringDates(startDate, endDate, pattern, recurrenceDay, recurrenceEndDate) {
-  const dates = [];
-  const start = new Date(startDate);
-  const end = new Date(endDate);
-  const duration = end.getTime() - start.getTime();
-  const recurEnd = recurrenceEndDate ? new Date(recurrenceEndDate) : new Date(start);
-
-  if (!recurrenceEndDate) {
-    recurEnd.setDate(recurEnd.getDate() + 28); // Default 4 weeks ahead
-  }
-
-  let current = new Date(start);
-  // Move to the next occurrence of the recurrence day
-  if (recurrenceDay !== undefined) {
-    while (current.getDay() !== recurrenceDay) {
-      current.setDate(current.getDate() + 1);
-    }
-  }
-  // Skip the first date (it's the template event itself)
-  const increment = pattern === 'weekly' ? 7 : pattern === 'biweekly' ? 14 : 30;
-  current.setDate(current.getDate() + increment);
-
-  while (current <= recurEnd) {
-    const instanceStart = new Date(current);
-    const instanceEnd = new Date(instanceStart.getTime() + duration);
-    dates.push({ startDate: instanceStart, endDate: instanceEnd });
-
-    if (pattern === 'monthly') {
-      current.setMonth(current.getMonth() + 1);
-    } else {
-      current.setDate(current.getDate() + increment);
-    }
-  }
-
-  return dates;
-}
 
 export const createEvent = async (req, res) => {
   try {
@@ -166,28 +141,6 @@ export const createEvent = async (req, res) => {
     });
 
     await event.save();
-
-    // Generate recurring instances
-    if (isRecurring && recurrencePattern) {
-      const dates = generateRecurringDates(startDate, endDate, recurrencePattern, recurrenceDay, recurrenceEndDate);
-      const instances = dates.map((d) => ({
-        organizationId: req.organizationId,
-        branchId,
-        title,
-        description,
-        eventType,
-        startDate: d.startDate,
-        endDate: d.endDate,
-        location,
-        organizerId: organizerId || req.user.userId,
-        maxCapacity,
-        parentEventId: event._id,
-      }));
-
-      if (instances.length > 0) {
-        await Event.insertMany(instances);
-      }
-    }
 
     res.status(201).json(event);
   } catch (error) {
@@ -346,62 +299,42 @@ export const shareEventByEmail = async (req, res) => {
   }
 };
 
-export const generateInstances = async (req, res) => {
+// Get upcoming occurrences for a recurring event
+export const getUpcomingOccurrences = async (req, res) => {
   try {
     const { id } = req.params;
-    const event = await Event.findById(id);
+    const rangeDays = parseInt(req.query.range) || 30;
 
+    const event = await Event.findById(id);
     if (!event) {
       return res.status(404).json({ error: 'Event not found' });
     }
 
-    if (!event.isRecurring || !event.recurrencePattern) {
+    if (!event.isRecurring) {
       return res.status(400).json({ error: 'Event is not a recurring event' });
     }
 
-    // Find the latest existing instance to generate from
-    const latestInstance = await Event.findOne({ parentEventId: event._id })
-      .sort({ startDate: -1 });
+    const now = new Date();
+    const rangeEnd = new Date(now);
+    rangeEnd.setDate(rangeEnd.getDate() + rangeDays);
 
-    const generateFrom = latestInstance ? latestInstance.startDate : event.startDate;
-    const duration = new Date(event.endDate).getTime() - new Date(event.startDate).getTime();
+    const occurrences = computeOccurrences(event, now, rangeEnd);
 
-    // Generate 4 more weeks from the latest instance
-    const endGenDate = new Date(generateFrom);
-    endGenDate.setDate(endGenDate.getDate() + 28);
-
-    const dates = generateRecurringDates(
-      generateFrom,
-      new Date(new Date(generateFrom).getTime() + duration),
-      event.recurrencePattern,
-      event.recurrenceDay,
-      event.recurrenceEndDate || endGenDate
+    // Attach attendance count for each occurrence
+    const result = await Promise.all(
+      occurrences.map(async (occ) => {
+        const attendeeCount = await AttendanceRecord.countDocuments({
+          eventId: event._id,
+          occurrenceDate: occ.startDate,
+        });
+        return { startDate: occ.startDate, endDate: occ.endDate, attendeeCount };
+      })
     );
 
-    const instances = dates.map((d) => ({
-      organizationId: event.organizationId,
-      branchId: event.branchId,
-      title: event.title,
-      description: event.description,
-      eventType: event.eventType,
-      startDate: d.startDate,
-      endDate: d.endDate,
-      location: event.location,
-      organizerId: event.organizerId,
-      maxCapacity: event.maxCapacity,
-      parentEventId: event._id,
-    }));
-
-    let created = 0;
-    if (instances.length > 0) {
-      const result = await Event.insertMany(instances);
-      created = result.length;
-    }
-
-    res.json({ message: `Generated ${created} event instance(s)` });
+    res.json(result);
   } catch (error) {
-    console.error('Error generating instances:', error);
-    res.status(500).json({ error: 'Failed to generate event instances' });
+    console.error('Error fetching occurrences:', error);
+    res.status(500).json({ error: 'Failed to fetch occurrences' });
   }
 };
 
@@ -414,12 +347,24 @@ export const generateQRCode = async (req, res) => {
       return res.status(404).json({ error: 'Event not found' });
     }
 
-    // Generate or refresh QR code token
     const token = uuidv4();
-    const expiresAt = new Date(event.endDate);
-    expiresAt.setHours(expiresAt.getHours() + 2); // Valid for 2 hours after event ends
+    let expiresAt;
+    let occurrenceDate = null;
 
-    // Generate QR code with URL to public check-in page
+    if (event.isRecurring) {
+      // For recurring events, generate QR for the current or next occurrence
+      const occurrence = getCurrentOccurrence(event) || getNextOccurrence(event);
+      if (!occurrence) {
+        return res.status(400).json({ error: 'No upcoming occurrences for this recurring event' });
+      }
+      expiresAt = new Date(occurrence.endDate);
+      expiresAt.setHours(expiresAt.getHours() + 2);
+      occurrenceDate = occurrence.startDate;
+    } else {
+      expiresAt = new Date(event.endDate);
+      expiresAt.setHours(expiresAt.getHours() + 2);
+    }
+
     const checkInUrl = `${process.env.CLIENT_URL || 'http://localhost:3000'}/check-in/${token}`;
 
     const dataUrl = await QRCode.toDataURL(checkInUrl, {
@@ -428,11 +373,7 @@ export const generateQRCode = async (req, res) => {
       margin: 2,
     });
 
-    event.qrCode = {
-      token,
-      dataUrl,
-      expiresAt,
-    };
+    event.qrCode = { token, dataUrl, expiresAt, occurrenceDate };
     event.updatedAt = new Date();
     await event.save();
 
@@ -441,6 +382,7 @@ export const generateQRCode = async (req, res) => {
       dataUrl,
       expiresAt,
       checkInUrl,
+      occurrenceDate,
     });
   } catch (error) {
     console.error('Error generating QR code:', error);
@@ -457,12 +399,44 @@ export const getQRCode = async (req, res) => {
       return res.status(404).json({ error: 'Event not found' });
     }
 
-    if (!event.qrCode || !event.qrCode.token) {
-      return res.status(404).json({ error: 'QR code not generated for this event' });
+    const now = new Date();
+    const hasValidQR = event.qrCode?.token && event.qrCode?.expiresAt && new Date(event.qrCode.expiresAt) > now;
+
+    // For recurring events, auto-refresh if QR is expired or missing
+    if (event.isRecurring && !hasValidQR) {
+      const occurrence = getCurrentOccurrence(event) || getNextOccurrence(event);
+      if (!occurrence) {
+        return res.status(400).json({ error: 'No upcoming occurrences for this recurring event' });
+      }
+
+      const token = uuidv4();
+      const expiresAt = new Date(occurrence.endDate);
+      expiresAt.setHours(expiresAt.getHours() + 2);
+      const checkInUrl = `${process.env.CLIENT_URL || 'http://localhost:3000'}/check-in/${token}`;
+
+      const dataUrl = await QRCode.toDataURL(checkInUrl, {
+        errorCorrectionLevel: 'M',
+        width: 400,
+        margin: 2,
+      });
+
+      event.qrCode = { token, dataUrl, expiresAt, occurrenceDate: occurrence.startDate };
+      event.updatedAt = now;
+      await event.save();
+
+      return res.json({
+        token,
+        dataUrl,
+        expiresAt,
+        checkInUrl,
+        occurrenceDate: occurrence.startDate,
+      });
     }
 
-    // Check if QR code is expired
-    if (event.qrCode.expiresAt && new Date() > new Date(event.qrCode.expiresAt)) {
+    if (!hasValidQR) {
+      if (!event.qrCode?.token) {
+        return res.status(404).json({ error: 'QR code not generated for this event' });
+      }
       return res.status(410).json({ error: 'QR code has expired' });
     }
 
@@ -473,6 +447,7 @@ export const getQRCode = async (req, res) => {
       dataUrl: event.qrCode.dataUrl,
       expiresAt: event.qrCode.expiresAt,
       checkInUrl,
+      occurrenceDate: event.qrCode.occurrenceDate || null,
     });
   } catch (error) {
     console.error('Error fetching QR code:', error);
@@ -484,9 +459,9 @@ export const getEventByToken = async (req, res) => {
   try {
     const { token } = req.params;
     const now = new Date();
-    
+
     const event = await Event.findOne({ 'qrCode.token': token })
-      .select('title description startDate endDate location eventType qrCode organizationId branchId status');
+      .select('title description startDate endDate location eventType qrCode organizationId branchId status isRecurring recurrenceEndDate');
 
     if (!event) {
       return res.status(404).json({ error: 'Invalid or expired check-in token' });
@@ -497,43 +472,27 @@ export const getEventByToken = async (req, res) => {
       return res.status(410).json({ error: 'Check-in token has expired' });
     }
 
-    // Auto-transition event status based on current time
-    let statusChanged = false;
-    
-    if (event.status === 'scheduled') {
-      // If event has ended, mark as completed
-      if (event.endDate < now) {
-        event.status = 'completed';
-        event.updatedAt = now;
-        statusChanged = true;
-      }
-      // If event has started but not ended, mark as ongoing
-      else if (event.startDate <= now && event.endDate >= now) {
-        event.status = 'ongoing';
-        event.updatedAt = now;
-        statusChanged = true;
-      }
-    }
-    // Transition ongoing events to completed when they end
-    else if (event.status === 'ongoing' && event.endDate < now) {
-      event.status = 'completed';
-      event.updatedAt = now;
-      statusChanged = true;
-    }
+    // For recurring events, compute occurrence-specific dates
+    let responseStartDate = event.startDate;
+    let responseEndDate = event.endDate;
 
-    if (statusChanged) {
-      await event.save();
+    if (event.isRecurring && event.qrCode.occurrenceDate) {
+      const duration = new Date(event.endDate).getTime() - new Date(event.startDate).getTime();
+      responseStartDate = event.qrCode.occurrenceDate;
+      responseEndDate = new Date(new Date(event.qrCode.occurrenceDate).getTime() + duration);
     }
 
     res.json({
       eventId: event._id,
       title: event.title,
       description: event.description,
-      startDate: event.startDate,
-      endDate: event.endDate,
+      startDate: responseStartDate,
+      endDate: responseEndDate,
       location: event.location,
       eventType: event.eventType,
       status: event.status,
+      isRecurring: event.isRecurring || false,
+      occurrenceDate: event.qrCode.occurrenceDate || null,
       token,
     });
   } catch (error) {
@@ -552,7 +511,7 @@ export default {
   generateShareLink,
   getPublicEvent,
   shareEventByEmail,
-  generateInstances,
+  getUpcomingOccurrences,
   generateQRCode,
   getQRCode,
   getEventByToken,

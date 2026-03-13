@@ -9,7 +9,7 @@ import {
   generateShareLink,
   getPublicEvent,
   shareEventByEmail,
-  generateInstances,
+  getUpcomingOccurrences,
   generateQRCode,
   getQRCode,
   getEventByToken,
@@ -30,7 +30,7 @@ router.get('/:id', authenticateToken, resolveBranchContext, getEventById);
 router.post('/', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), createEvent);
 router.put('/:id', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), updateEvent);
 router.delete('/:id', authenticateToken, resolveBranchContext, authorizeRole(['admin']), deleteEvent);
-router.post('/:id/generate-instances', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), generateInstances);
+router.get('/:id/occurrences', authenticateToken, resolveBranchContext, getUpcomingOccurrences);
 router.post('/:eventId/register', authenticateToken, resolveBranchContext, registerForEvent);
 
 // QR code routes

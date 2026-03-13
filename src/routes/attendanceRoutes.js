@@ -5,6 +5,7 @@ import {
   createAttendance,
   updateAttendance,
   deleteAttendance,
+  deleteAttendanceRecord,
   getAttendanceStats,
   checkInWithQR,
   getEventAttendanceRecords,
@@ -31,5 +32,6 @@ router.get('/:id', authenticateToken, resolveBranchContext, getAttendanceById);
 router.post('/', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), createAttendance);
 router.put('/:id', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), updateAttendance);
 router.delete('/:id', authenticateToken, resolveBranchContext, authorizeRole(['admin']), deleteAttendance);
+router.delete('/record/:id', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), deleteAttendanceRecord);
 
 export default router;

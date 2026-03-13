@@ -6,6 +6,7 @@ import PDFDocument from 'pdfkit';
 import Member from '../models/Member.js';
 import Department from '../models/Department.js';
 import { branchFilter, resolveCreateBranch } from '../utils/branchQuery.js';
+import { normalizePhone } from '../utils/phoneUtils.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -118,8 +119,8 @@ export const createMember = async (req, res) => {
       familyMembers, departments, notes,
     } = req.body;
 
-    if (!firstName || !lastName || !email) {
-      return res.status(400).json({ error: 'First name, last name, and email are required' });
+    if (!firstName || !lastName || !phone) {
+      return res.status(400).json({ error: 'First name, last name, and phone are required' });
     }
 
     const branchId = resolveCreateBranch(req);
@@ -144,7 +145,7 @@ export const createMember = async (req, res) => {
       firstName,
       lastName,
       email,
-      phone,
+      phone: normalizePhone(phone),
       dateOfBirth,
       gender,
       maritalStatus,
@@ -520,29 +521,29 @@ export const importMembers = async (req, res) => {
     for (const memberData of membersData) {
       try {
         // Validate required fields
-        if (!memberData.firstName || !memberData.lastName || !memberData.email) {
+        if (!memberData.firstName || !memberData.lastName || !memberData.phone) {
           results.failed++;
-          results.errors.push(`Missing required fields for: ${memberData.email || 'unknown'}`);
+          results.errors.push(`Missing required fields for: ${memberData.phone || memberData.firstName || 'unknown'}`);
           continue;
         }
 
-        // Check if member with email already exists
-        const existingMember = await Member.findOne({ 
-          email: memberData.email.toLowerCase(),
+        // Check if member with phone already exists
+        const existingMember = await Member.findOne({
+          phone: normalizePhone(memberData.phone),
           organizationId: req.organizationId,
         });
 
         if (existingMember) {
           results.failed++;
-          results.errors.push(`Member with email ${memberData.email} already exists`);
+          results.errors.push(`Member with phone ${memberData.phone} already exists`);
           continue;
         }
 
         const newMember = new Member({
           firstName: memberData.firstName,
           lastName: memberData.lastName,
-          email: memberData.email.toLowerCase(),
-          phone: memberData.phone || null,
+          email: memberData.email ? memberData.email.toLowerCase() : null,
+          phone: normalizePhone(memberData.phone),
           gender: memberData.gender || null,
           dateOfBirth: memberData.dateOfBirth ? new Date(memberData.dateOfBirth) : null,
           maritalStatus: memberData.maritalStatus || null,

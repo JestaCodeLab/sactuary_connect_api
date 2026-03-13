@@ -36,6 +36,7 @@ const attendanceRecordSchema = new mongoose.Schema({
     type: Date,
     default: Date.now,
   },
+  occurrenceDate: Date,
   notes: String,
   createdAt: {
     type: Date,
@@ -46,5 +47,6 @@ const attendanceRecordSchema = new mongoose.Schema({
 attendanceRecordSchema.index({ organizationId: 1, branchId: 1, eventId: 1 });
 attendanceRecordSchema.index({ eventId: 1, memberId: 1 });
 attendanceRecordSchema.index({ eventId: 1, checkInTime: 1 });
+attendanceRecordSchema.index({ eventId: 1, occurrenceDate: 1, memberId: 1 });
 
 export default mongoose.model('AttendanceRecord', attendanceRecordSchema);

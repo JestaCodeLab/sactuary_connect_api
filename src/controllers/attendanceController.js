@@ -8,6 +8,8 @@ import AttendanceRecord from '../models/AttendanceRecord.js';
 import Event from '../models/Event.js';
 import Member from '../models/Member.js';
 import { branchFilter, resolveCreateBranch } from '../utils/branchQuery.js';
+import { getNextOccurrence, getCurrentOccurrence } from '../utils/occurrenceHelper.js';
+import { normalizePhone, findMemberByPhone } from '../utils/phoneUtils.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -213,36 +215,56 @@ export const checkInWithQR = async (req, res) => {
       return res.status(410).json({ error: 'QR code has expired' });
     }
 
+    // For recurring events, use occurrence-specific start date
+    let occurrenceDate = null;
+    let checkStartDate = event.startDate;
+
+    if (event.isRecurring && event.qrCode.occurrenceDate) {
+      occurrenceDate = event.qrCode.occurrenceDate;
+      checkStartDate = occurrenceDate;
+    }
+
     // Check if event has started
-    if (new Date() < new Date(event.startDate)) {
-      return res.status(400).json({ 
+    if (new Date() < new Date(checkStartDate)) {
+      return res.status(400).json({
         error: 'Check-in is not yet available. This event has not started yet.',
-        startDate: event.startDate 
+        startDate: checkStartDate
       });
     }
 
-    // Check if already checked in
+    // Check if already checked in (scoped to occurrence for recurring events)
     let existingCheckIn = null;
-    
-    if (memberId || userId) {
+    const duplicateFilter = { eventId: event._id };
+    if (occurrenceDate) {
+      duplicateFilter.occurrenceDate = occurrenceDate;
+    }
+
+    // Try to match phone to an existing member in this organization
+    let matchedMember = null;
+    if (!memberId && !userId && phone) {
+      matchedMember = await findMemberByPhone(Member, phone, event.organizationId);
+    }
+
+    const resolvedMemberId = memberId || (matchedMember ? matchedMember._id : null);
+
+    if (resolvedMemberId || userId) {
       existingCheckIn = await AttendanceRecord.findOne({
-        eventId: event._id,
+        ...duplicateFilter,
         $or: [
-          memberId ? { memberId } : null,
+          resolvedMemberId ? { memberId: resolvedMemberId } : null,
           userId ? { userId } : null,
         ].filter(Boolean),
       });
-    } else if (email) {
-      // For guests, check by email to prevent duplicate check-ins
+    } else if (phone) {
       existingCheckIn = await AttendanceRecord.findOne({
-        eventId: event._id,
-        email: email,
+        ...duplicateFilter,
+        phone: normalizePhone(phone),
         checkInMethod: 'guest',
       });
     }
 
     if (existingCheckIn) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         error: 'Already checked in',
         checkInTime: existingCheckIn.checkInTime,
       });
@@ -257,20 +279,24 @@ export const checkInWithQR = async (req, res) => {
       checkInTime: new Date(),
     };
 
-    if (memberId) {
-      checkInData.memberId = memberId;
+    if (occurrenceDate) {
+      checkInData.occurrenceDate = occurrenceDate;
+    }
+
+    if (resolvedMemberId) {
+      checkInData.memberId = resolvedMemberId;
     } else if (userId) {
       checkInData.userId = userId;
     } else {
-      // Guest check-in via QR code
+      checkInData.checkInMethod = 'guest';
       checkInData.name = name;
       checkInData.email = email;
-      checkInData.phone = phone;
+      checkInData.phone = normalizePhone(phone);
     }
 
     const record = await AttendanceRecord.create(checkInData);
     const populated = await record.populate([
-      { path: 'memberId', select: 'firstName lastName email' },
+      { path: 'memberId', select: 'firstName lastName phone email' },
       { path: 'userId', select: 'firstName lastName email' },
       { path: 'eventId', select: 'title startDate endDate' },
     ]);
@@ -288,8 +314,14 @@ export const checkInWithQR = async (req, res) => {
 export const getEventAttendanceRecords = async (req, res) => {
   try {
     const { eventId } = req.params;
+    const { occurrenceDate } = req.query;
 
-    const records = await AttendanceRecord.find({ eventId })
+    const filter = { eventId };
+    if (occurrenceDate) {
+      filter.occurrenceDate = new Date(occurrenceDate);
+    }
+
+    const records = await AttendanceRecord.find(filter)
       .populate('memberId', 'firstName lastName email phone')
       .populate('userId', 'firstName lastName email')
       .sort({ checkInTime: -1 });
@@ -297,10 +329,10 @@ export const getEventAttendanceRecords = async (req, res) => {
     const stats = {
       total: records.length,
       members: records.filter(r => r.memberId).length,
-      users: records.filter(r => r.userId).length,
-      guests: records.filter(r => r.checkInMethod === 'guest').length,
+      users: records.filter(r => r.userId && !r.memberId).length,
+      guests: records.filter(r => !r.memberId && !r.userId).length,
       qrCheckIns: records.filter(r => r.checkInMethod === 'qr').length,
-      manualCheckIns: records.filter(r => r.checkInMethod === 'manual').length,
+      manualCheckIns: records.filter(r => r.checkInMethod === 'manual' || r.checkInMethod === 'guest').length,
     };
 
     res.json({ records, stats });
@@ -312,7 +344,7 @@ export const getEventAttendanceRecords = async (req, res) => {
 
 export const manualCheckIn = async (req, res) => {
   try {
-    const { eventId, memberId, userId, name, email, phone, notes } = req.body;
+    const { eventId, memberId, userId, name, email, phone, notes, occurrenceDate: reqOccurrenceDate } = req.body;
 
     if (!eventId) {
       return res.status(400).json({ error: 'Event ID is required' });
@@ -323,20 +355,46 @@ export const manualCheckIn = async (req, res) => {
       return res.status(404).json({ error: 'Event not found' });
     }
 
-    // Check if already checked in
-    const existingCheckIn = await AttendanceRecord.findOne({
-      eventId,
-      $or: [
-        memberId ? { memberId } : null,
-        userId ? { userId } : null,
-      ].filter(Boolean),
-    });
+    // Resolve occurrence date for recurring events
+    let occurrenceDate = null;
+    if (event.isRecurring) {
+      if (reqOccurrenceDate) {
+        occurrenceDate = new Date(reqOccurrenceDate);
+      } else {
+        const occ = getCurrentOccurrence(event) || getNextOccurrence(event);
+        occurrenceDate = occ ? occ.startDate : null;
+      }
+    }
 
-    if (existingCheckIn) {
-      return res.status(400).json({ 
-        error: 'Already checked in',
-        checkInTime: existingCheckIn.checkInTime,
+    // Check if already checked in (scoped to occurrence)
+    const duplicateFilter = { eventId };
+    if (occurrenceDate) {
+      duplicateFilter.occurrenceDate = occurrenceDate;
+    }
+
+    // Try to match phone to an existing member in this organization
+    let matchedMember = null;
+    if (!memberId && !userId && phone) {
+      matchedMember = await findMemberByPhone(Member, phone, event.organizationId);
+    }
+
+    const resolvedMemberId = memberId || (matchedMember ? matchedMember._id : null);
+
+    if (resolvedMemberId || userId) {
+      const existingCheckIn = await AttendanceRecord.findOne({
+        ...duplicateFilter,
+        $or: [
+          resolvedMemberId ? { memberId: resolvedMemberId } : null,
+          userId ? { userId } : null,
+        ].filter(Boolean),
       });
+
+      if (existingCheckIn) {
+        return res.status(400).json({
+          error: 'Already checked in',
+          checkInTime: existingCheckIn.checkInTime,
+        });
+      }
     }
 
     const checkInData = {
@@ -348,20 +406,24 @@ export const manualCheckIn = async (req, res) => {
       notes,
     };
 
-    if (memberId) {
-      checkInData.memberId = memberId;
+    if (occurrenceDate) {
+      checkInData.occurrenceDate = occurrenceDate;
+    }
+
+    if (resolvedMemberId) {
+      checkInData.memberId = resolvedMemberId;
     } else if (userId) {
       checkInData.userId = userId;
     } else {
       checkInData.checkInMethod = 'guest';
       checkInData.name = name;
       checkInData.email = email;
-      checkInData.phone = phone;
+      checkInData.phone = normalizePhone(phone);
     }
 
     const record = await AttendanceRecord.create(checkInData);
     const populated = await record.populate([
-      { path: 'memberId', select: 'firstName lastName email' },
+      { path: 'memberId', select: 'firstName lastName phone email' },
       { path: 'userId', select: 'firstName lastName email' },
       { path: 'eventId', select: 'title startDate endDate' },
     ]);
@@ -380,14 +442,19 @@ export const manualCheckIn = async (req, res) => {
 export const exportEventAttendance = async (req, res) => {
   try {
     const { eventId } = req.params;
-    const { format = 'csv' } = req.query;
+    const { format = 'csv', occurrenceDate } = req.query;
 
     const event = await Event.findById(eventId);
     if (!event) {
       return res.status(404).json({ error: 'Event not found' });
     }
 
-    const records = await AttendanceRecord.find({ eventId })
+    const filter = { eventId };
+    if (occurrenceDate) {
+      filter.occurrenceDate = new Date(occurrenceDate);
+    }
+
+    const records = await AttendanceRecord.find(filter)
       .populate('memberId', 'firstName lastName email phone')
       .populate('userId', 'firstName lastName email')
       .sort({ checkInTime: 1 });
@@ -532,12 +599,29 @@ export const exportEventAttendance = async (req, res) => {
   }
 };
 
+export const deleteAttendanceRecord = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const record = await AttendanceRecord.findByIdAndDelete(id);
+
+    if (!record) {
+      return res.status(404).json({ error: 'Attendance record not found' });
+    }
+
+    res.json({ message: 'Attendance record deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting attendance record:', error);
+    res.status(500).json({ error: 'Failed to delete attendance record' });
+  }
+};
+
 export default {
   getAllAttendance,
   getAttendanceById,
   createAttendance,
   updateAttendance,
   deleteAttendance,
+  deleteAttendanceRecord,
   getAttendanceStats,
   checkInWithQR,
   getEventAttendanceRecords,

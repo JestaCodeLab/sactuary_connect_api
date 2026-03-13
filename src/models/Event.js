@@ -48,10 +48,6 @@ const eventSchema = new mongoose.Schema({
     max: 6,
   },
   recurrenceEndDate: Date,
-  parentEventId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Event',
-  },
   shareToken: {
     type: String,
     unique: true,
@@ -69,6 +65,7 @@ const eventSchema = new mongoose.Schema({
     },
     dataUrl: String,
     expiresAt: Date,
+    occurrenceDate: Date,
   },
   createdAt: {
     type: Date,
