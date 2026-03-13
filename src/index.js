@@ -8,6 +8,7 @@ import path from 'path';
 import connectDB from './config/database.js';
 import { cleanupExports } from './utils/exportCleanup.js';
 import { startRecurringQRJob } from './jobs/recurringQRJob.js';
+import { initBirthdayJob } from './jobs/birthdayJob.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -26,6 +27,7 @@ import expenseRoutes from './routes/expenseRoutes.js';
 import financeRoutes from './routes/financeRoutes.js';
 import userBranchRoutes from './routes/userBranchRoutes.js';
 import smsRoutes from './routes/smsRoutes.js';
+import settingsRoutes from './routes/settingsRoutes.js';
 
 dotenv.config();
 
@@ -64,6 +66,7 @@ app.use('/api/expenses', expenseRoutes);
 app.use('/api/finance', financeRoutes);
 app.use('/api', userBranchRoutes);
 app.use('/api/sms', smsRoutes);
+app.use('/api/settings', settingsRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -83,6 +86,9 @@ const startServer = async () => {
 
     // Start recurring event QR code auto-generation job
     startRecurringQRJob();
+
+    // Start birthday SMS automation job (9:00 AM daily)
+    initBirthdayJob();
 
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);

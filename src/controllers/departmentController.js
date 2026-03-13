@@ -1,5 +1,6 @@
 import Department from '../models/Department.js';
 import { branchFilter, resolveCreateBranch } from '../utils/branchQuery.js';
+import { checkDepartmentLimit } from '../utils/usageLimits.js';
 
 export const getAllDepartments = async (req, res) => {
   try {
@@ -41,6 +42,17 @@ export const createDepartment = async (req, res) => {
 
     if (!name || !branchId) {
       return res.status(400).json({ error: 'Department name and branch are required' });
+    }
+
+    // Check department limit
+    const limitCheck = await checkDepartmentLimit(req.organizationId);
+    if (!limitCheck.allowed) {
+      return res.status(403).json({
+        error: 'Department limit reached for your plan',
+        code: 'DEPARTMENT_LIMIT_EXCEEDED',
+        current: limitCheck.current,
+        limit: limitCheck.limit,
+      });
     }
 
     const department = await Department.create({

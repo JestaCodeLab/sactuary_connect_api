@@ -14,7 +14,9 @@ export const PLANS = {
     limits: {
       maxMembers: 50,
       maxBranches: 1,
-      smsCredits: 0,
+      maxDepartments: 2,
+      maxEvents: 5,
+      smsCredits: 5,
       donationTransactions: 20,
     },
     features: [
@@ -50,7 +52,9 @@ export const PLANS = {
     isPopular: true,
     limits: {
       maxMembers: 250,
-      maxBranches: 1,
+      maxBranches: 5,
+      maxDepartments: 10,
+      maxEvents: 50,
       smsCredits: 100,
       donationTransactions: 50,
     },
@@ -87,6 +91,8 @@ export const PLANS = {
     limits: {
       maxMembers: 1000,
       maxBranches: 10,
+      maxDepartments: 50,
+      maxEvents: 500,
       smsCredits: 250,
       donationTransactions: -1, // Unlimited
     },
@@ -124,6 +130,8 @@ export const PLANS = {
     limits: {
       maxMembers: -1, // Unlimited
       maxBranches: -1, // Unlimited
+      maxDepartments: -1, // Unlimited
+      maxEvents: -1, // Unlimited
       smsCredits: -1, // Custom
       donationTransactions: -1, // Unlimited
     },

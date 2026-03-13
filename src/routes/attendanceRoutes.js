@@ -14,24 +14,25 @@ import {
 } from '../controllers/attendanceController.js';
 import { authenticateToken, authorizeRole } from '../middleware/auth.js';
 import { resolveBranchContext } from '../middleware/branchContext.js';
+import { requireFeature } from '../middleware/featureGate.js';
 
 const router = express.Router();
 
 // Static routes must come before /:id to avoid conflicts
-router.get('/stats/summary', authenticateToken, resolveBranchContext, getAttendanceStats);
-router.get('/event/:eventId/records', authenticateToken, resolveBranchContext, getEventAttendanceRecords);
-router.get('/event/:eventId/export', authenticateToken, resolveBranchContext, exportEventAttendance);
+router.get('/stats/summary', authenticateToken, resolveBranchContext, requireFeature('attendance_tracking'), getAttendanceStats);
+router.get('/event/:eventId/records', authenticateToken, resolveBranchContext, requireFeature('attendance_tracking'), getEventAttendanceRecords);
+router.get('/event/:eventId/export', authenticateToken, resolveBranchContext, requireFeature('attendance_tracking'), exportEventAttendance);
 
 // Check-in routes (QR check-in is public for guests/members)
 router.post('/check-in/qr', checkInWithQR);
-router.post('/check-in/manual', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), manualCheckIn);
+router.post('/check-in/manual', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), requireFeature('attendance_tracking'), manualCheckIn);
 
 // CRUD routes
-router.get('/', authenticateToken, resolveBranchContext, getAllAttendance);
-router.get('/:id', authenticateToken, resolveBranchContext, getAttendanceById);
-router.post('/', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), createAttendance);
-router.put('/:id', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), updateAttendance);
-router.delete('/:id', authenticateToken, resolveBranchContext, authorizeRole(['admin']), deleteAttendance);
-router.delete('/record/:id', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), deleteAttendanceRecord);
+router.get('/', authenticateToken, resolveBranchContext, requireFeature('attendance_tracking'), getAllAttendance);
+router.get('/:id', authenticateToken, resolveBranchContext, requireFeature('attendance_tracking'), getAttendanceById);
+router.post('/', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), requireFeature('attendance_tracking'), createAttendance);
+router.put('/:id', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), requireFeature('attendance_tracking'), updateAttendance);
+router.delete('/:id', authenticateToken, resolveBranchContext, authorizeRole(['admin']), requireFeature('attendance_tracking'), deleteAttendance);
+router.delete('/record/:id', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), requireFeature('attendance_tracking'), deleteAttendanceRecord);
 
 export default router;

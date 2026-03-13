@@ -7,6 +7,7 @@ import Message from '../models/Message.js';
 import Member from '../models/Member.js';
 import { branchFilter, resolveCreateBranch } from '../utils/branchQuery.js';
 import { computeOccurrences, getNextOccurrence, getCurrentOccurrence } from '../utils/occurrenceHelper.js';
+import { checkEventLimit } from '../utils/usageLimits.js';
 
 export const getAllEvents = async (req, res) => {
   try {
@@ -41,6 +42,12 @@ export const getAllEvents = async (req, res) => {
     await Event.updateMany(
       { ...branchFilter(req), status: 'scheduled', startDate: { $lte: now }, endDate: { $gte: now }, isRecurring: { $ne: true } },
       { $set: { status: 'ongoing', updatedAt: now } }
+    );
+
+    // Auto-transition: non-recurring ongoing events whose endDate has passed → completed
+    await Event.updateMany(
+      { ...branchFilter(req), status: 'ongoing', endDate: { $lt: now }, isRecurring: { $ne: true } },
+      { $set: { status: 'completed', updatedAt: now } }
     );
 
     // Auto-transition: recurring events whose recurrenceEndDate has passed → completed
@@ -121,6 +128,17 @@ export const createEvent = async (req, res) => {
     const branchId = resolveCreateBranch(req);
     if (!branchId) {
       return res.status(400).json({ error: 'Branch is required' });
+    }
+
+    // Check event limit
+    const limitCheck = await checkEventLimit(req.organizationId);
+    if (!limitCheck.allowed) {
+      return res.status(403).json({
+        error: 'Event limit reached for your plan',
+        code: 'EVENT_LIMIT_EXCEEDED',
+        current: limitCheck.current,
+        limit: limitCheck.limit,
+      });
     }
 
     const event = new Event({

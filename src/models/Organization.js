@@ -25,6 +25,15 @@ const organizationSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Subscription',
   },
+  // Birthday SMS settings
+  birthdayMessageTemplate: {
+    type: String,
+    default: "Happy Birthday {{firstName}}! 🎉🎂 May God bless you abundantly on your special day. You are loved and cherished. - {{churchName}}",
+  },
+  birthdayAutoSendEnabled: {
+    type: Boolean,
+    default: true,
+  },
   // Onboarding status
   onboardingComplete: {
     type: Boolean,

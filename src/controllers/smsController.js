@@ -1,10 +1,16 @@
 import smsService from '../services/smsService.js';
 import SmsCredit from '../models/SmsCredit.js';
+import SmsPayment from '../models/SmsPayment.js';
 import SmsLog from '../models/SmsLog.js';
 import Member from '../models/Member.js';
 import Department from '../models/Department.js';
 import Branch from '../models/Branch.js';
 import Organization from '../models/Organization.js';
+import { checkSmsCredits } from '../utils/usageLimits.js';
+import axios from 'axios';
+
+const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY;
+const PRICE_PER_CREDIT = 0.035; // GHS
 
 // Get SMS credits balance
 export const getCreditsBalance = async (req, res) => {
@@ -90,6 +96,169 @@ export const purchaseCredits = async (req, res) => {
   }
 };
 
+// Initialize SMS credit purchase (calculate cost & create payment record)
+export const initializeSmsPayment = async (req, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const { credits } = req.body;
+
+    if (!credits || credits <= 0) {
+      return res.status(400).json({ error: 'Invalid credit amount' });
+    }
+
+    const amountInGhs = credits * PRICE_PER_CREDIT;
+
+    // Create payment record
+    const payment = new SmsPayment({
+      organizationId,
+      credits,
+      amountInGhs,
+      status: 'pending',
+      paymentMethod: 'card',
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent')
+    });
+
+    await payment.save();
+
+    res.json({
+      success: true,
+      reference: payment._id,
+      credits,
+      pricePerCredit: PRICE_PER_CREDIT,
+      subtotal: amountInGhs,
+      tax: 0,
+      total: amountInGhs,
+      currency: 'GHS',
+      message: `Ready to purchase ${credits} SMS credits for GHS ${amountInGhs.toFixed(2)}`
+    });
+  } catch (error) {
+    console.error('Initialize SMS payment error:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Verify SMS credit payment with Paystack
+export const verifySmsPayment = async (req, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const { paystackReference } = req.body;
+
+    if (!paystackReference) {
+      return res.status(400).json({ error: 'Paystack reference is required' });
+    }
+
+    // Verify with Paystack
+    const paystackResponse = await axios.get(
+      `https://api.paystack.co/transaction/verify/${paystackReference}`,
+      {
+        headers: {
+          Authorization: `Bearer ${PAYSTACK_SECRET_KEY}`
+        }
+      }
+    );
+
+    const { data } = paystackResponse.data;
+
+    if (!data) {
+      return res.status(400).json({ error: 'Transaction not found on Paystack' });
+    }
+
+    if (data.status !== 'success') {
+      return res.status(400).json({ 
+        error: 'Payment was not successful',
+        paystackStatus: data.status 
+      });
+    }
+
+    // Find or create payment record
+    let payment = await SmsPayment.findOne({ paystackReference });
+
+    if (!payment) {
+      // Calculate expected amount from Paystack data (in pesewas, so divide by 100)
+      const amountInGhs = data.amount / 100;
+      const credits = Math.round(amountInGhs / PRICE_PER_CREDIT);
+
+      payment = new SmsPayment({
+        organizationId,
+        credits,
+        amountInGhs,
+        paystackReference,
+        status: 'verified',
+        paymentMethod: data.channel,
+        channel: data.channel
+      });
+    } else if (payment.organizationId.toString() !== organizationId.toString()) {
+      // Prevent one organization from using another's payment
+      return res.status(403).json({ error: 'Payment does not belong to your organization' });
+    } else {
+      payment.status = 'verified';
+      payment.paymentMethod = data.channel;
+      payment.channel = data.channel;
+    }
+
+    // Store Paystack verification details
+    payment.paystackVerification = {
+      status: data.status,
+      amount: data.amount / 100, // Convert from pesewas to GHS
+      paidAt: new Date(data.paid_at),
+      customerCode: data.customer?.customer_code,
+      last4: data.authorization?.last4,
+      brand: data.authorization?.brand,
+      momoProvider: data.authorization?.bank || null,
+      momoNumber: data.authorization?.exp_month ? `${data.authorization?.exp_month}/${data.authorization?.exp_year}` : null
+    };
+
+    payment.paystackCustomerCode = data.customer?.customer_code;
+    payment.verifiedAt = new Date();
+
+    await payment.save();
+
+    // Credit the merchant's SMS account
+    const smsCredit = await SmsCredit.getOrCreate(organizationId, 0);
+    await smsCredit.addCredits(
+      payment.credits,
+      'purchase',
+      `SMS credits purchased via Paystack (${data.channel})`,
+      paystackReference
+    );
+
+    // Mark payment as completed
+    payment.status = 'completed';
+    payment.completedAt = new Date();
+    await payment.save();
+
+    res.json({
+      success: true,
+      message: `Successfully purchased ${payment.credits} SMS credits`,
+      credits: payment.credits,
+      amount: payment.amountInGhs,
+      newBalance: smsCredit.balance,
+      paystackReference
+    });
+  } catch (error) {
+    console.error('Verify SMS payment error:', error);
+
+    // Update payment record with error
+    if (error.response?.status === 400) {
+      const ref = error.config?.url?.split('/').pop();
+      if (ref) {
+        await SmsPayment.updateOne(
+          { paystackReference: ref },
+          { 
+            status: 'failed',
+            errorMessage: error.response.data?.message || error.message 
+          }
+        );
+      }
+    }
+
+    res.status(500).json({ 
+      error: error.response?.data?.message || error.message 
+    });
+  }
+};
+
 // Send single SMS
 export const sendSingleSMS = async (req, res) => {
   try {
@@ -101,6 +270,18 @@ export const sendSingleSMS = async (req, res) => {
     }
     if (!phone || !message) {
       return res.status(400).json({ error: 'Phone number and message are required' });
+    }
+
+    // Check SMS credits
+    const creditCheck = await checkSmsCredits(merchantId, 1);
+    if (!creditCheck.allowed) {
+      return res.status(403).json({
+        error: `Insufficient SMS credits. You need ${creditCheck.required} credit(s) but only have ${creditCheck.currentBalance}`,
+        code: 'INSUFFICIENT_SMS_CREDITS',
+        currentBalance: creditCheck.currentBalance,
+        required: creditCheck.required,
+        shortfall: creditCheck.shortfall,
+      });
     }
 
     const result = await smsService.sendSingle({
@@ -142,6 +323,19 @@ export const sendBulkSMS = async (req, res) => {
 
     if (!message) {
       return res.status(400).json({ error: 'Message is required' });
+    }
+
+    // Check SMS credits
+    const creditCheck = await checkSmsCredits(merchantId, phones.length);
+    if (!creditCheck.allowed) {
+      return res.status(403).json({
+        error: `Insufficient SMS credits. You need ${creditCheck.required} credit(s) but only have ${creditCheck.currentBalance}`,
+        code: 'INSUFFICIENT_SMS_CREDITS',
+        currentBalance: creditCheck.currentBalance,
+        required: creditCheck.required,
+        shortfall: creditCheck.shortfall,
+        recipientCount: phones.length,
+      });
     }
 
     const result = await smsService.sendBulk({
@@ -190,6 +384,19 @@ export const sendToMembers = async (req, res) => {
 
     if (!message) {
       return res.status(400).json({ error: 'Message is required' });
+    }
+
+    // Check SMS credits
+    const creditCheck = await checkSmsCredits(merchantId, memberIds.length);
+    if (!creditCheck.allowed) {
+      return res.status(403).json({
+        error: `Insufficient SMS credits. You need ${creditCheck.required} credit(s) but only have ${creditCheck.currentBalance}`,
+        code: 'INSUFFICIENT_SMS_CREDITS',
+        currentBalance: creditCheck.currentBalance,
+        required: creditCheck.required,
+        shortfall: creditCheck.shortfall,
+        recipientCount: memberIds.length,
+      });
     }
 
     const result = await smsService.sendToMembers({
@@ -249,6 +456,25 @@ export const sendToBranch = async (req, res) => {
       return res.status(400).json({ error: 'Message is required' });
     }
 
+    // Count branch members
+    const memberCount = await Member.countDocuments({
+      branch: branchId,
+      phoneNumber: { $exists: true, $ne: '' }
+    });
+
+    // Check SMS credits
+    const creditCheck = await checkSmsCredits(merchantId, memberCount);
+    if (!creditCheck.allowed) {
+      return res.status(403).json({
+        error: `Insufficient SMS credits. You need ${creditCheck.required} credit(s) but only have ${creditCheck.currentBalance}`,
+        code: 'INSUFFICIENT_SMS_CREDITS',
+        currentBalance: creditCheck.currentBalance,
+        required: creditCheck.required,
+        shortfall: creditCheck.shortfall,
+        recipientCount: memberCount,
+      });
+    }
+
     const result = await smsService.sendToBranch({
       branchId,
       message,
@@ -291,6 +517,25 @@ export const sendToDepartment = async (req, res) => {
       return res.status(400).json({ error: 'Message is required' });
     }
 
+    // Count department members
+    const memberCount = await Member.countDocuments({
+      department: departmentId,
+      phoneNumber: { $exists: true, $ne: '' }
+    });
+
+    // Check SMS credits
+    const creditCheck = await checkSmsCredits(merchantId, memberCount);
+    if (!creditCheck.allowed) {
+      return res.status(403).json({
+        error: `Insufficient SMS credits. You need ${creditCheck.required} credit(s) but only have ${creditCheck.currentBalance}`,
+        code: 'INSUFFICIENT_SMS_CREDITS',
+        currentBalance: creditCheck.currentBalance,
+        required: creditCheck.required,
+        shortfall: creditCheck.shortfall,
+        recipientCount: memberCount,
+      });
+    }
+
     const result = await smsService.sendToDepartment({
       departmentId,
       message,
@@ -328,6 +573,25 @@ export const sendToAllMembers = async (req, res) => {
 
     if (!message) {
       return res.status(400).json({ error: 'Message is required' });
+    }
+
+    // Count all organization members
+    const memberCount = await Member.countDocuments({
+      organization: merchantId,
+      phoneNumber: { $exists: true, $ne: '' }
+    });
+
+    // Check SMS credits
+    const creditCheck = await checkSmsCredits(merchantId, memberCount);
+    if (!creditCheck.allowed) {
+      return res.status(403).json({
+        error: `Insufficient SMS credits. You need ${creditCheck.required} credit(s) but only have ${creditCheck.currentBalance}`,
+        code: 'INSUFFICIENT_SMS_CREDITS',
+        currentBalance: creditCheck.currentBalance,
+        required: creditCheck.required,
+        shortfall: creditCheck.shortfall,
+        recipientCount: memberCount,
+      });
     }
 
     const result = await smsService.sendToAllMembers({

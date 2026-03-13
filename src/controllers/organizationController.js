@@ -3,6 +3,7 @@ import Branch from '../models/Branch.js';
 import FundBucket from '../models/FundBucket.js';
 import User from '../models/User.js';
 import { generateToken } from '../config/jwt.js';
+import { checkBranchLimit } from '../utils/usageLimits.js';
 
 export const createOrganization = async (req, res) => {
   try {
@@ -124,6 +125,17 @@ export const createBranch = async (req, res) => {
 
     if (!organizationId || !name) {
       return res.status(400).json({ error: 'Organization ID and branch name are required' });
+    }
+
+    // Check branch limit
+    const limitCheck = await checkBranchLimit(organizationId);
+    if (!limitCheck.allowed) {
+      return res.status(403).json({
+        error: `Branch limit reached. Current: ${limitCheck.current}/${limitCheck.limit}`,
+        code: 'BRANCH_LIMIT_EXCEEDED',
+        current: limitCheck.current,
+        limit: limitCheck.limit,
+      });
     }
 
     const branch = await Branch.create({

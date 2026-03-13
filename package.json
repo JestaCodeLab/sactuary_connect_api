@@ -30,6 +30,7 @@
     "joi": "^17.11.0",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^7.6.3",
+    "node-cron": "^4.2.1",
     "nodemailer": "^7.0.12",
     "pdfkit": "^0.17.2",
     "qrcode": "^1.5.4",

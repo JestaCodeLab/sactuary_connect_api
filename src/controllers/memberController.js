@@ -7,6 +7,7 @@ import Member from '../models/Member.js';
 import Department from '../models/Department.js';
 import { branchFilter, resolveCreateBranch } from '../utils/branchQuery.js';
 import { normalizePhone } from '../utils/phoneUtils.js';
+import { checkMemberLimit } from '../utils/usageLimits.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -121,6 +122,17 @@ export const createMember = async (req, res) => {
 
     if (!firstName || !lastName || !phone) {
       return res.status(400).json({ error: 'First name, last name, and phone are required' });
+    }
+
+    // Check member limit
+    const limitCheck = await checkMemberLimit(req.organizationId);
+    if (!limitCheck.allowed) {
+      return res.status(403).json({
+        error: `Member limit reached. Current: ${limitCheck.current}/${limitCheck.limit}`,
+        code: 'MEMBER_LIMIT_EXCEEDED',
+        current: limitCheck.current,
+        limit: limitCheck.limit,
+      });
     }
 
     const branchId = resolveCreateBranch(req);

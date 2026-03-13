@@ -78,6 +78,22 @@ const subscriptionSchema = new mongoose.Schema({
     currency: { type: String, default: 'GHS' },
   },
 
+  // Paystack payment tracking
+  paystackReference: String,
+  paystackCustomerCode: String,
+  paymentHistory: [{
+    reference: String,
+    amount: Number,
+    currency: { type: String, default: 'GHS' },
+    channel: String,
+    paidAt: Date,
+    planId: String,
+    type: {
+      type: String,
+      enum: ['initial', 'upgrade', 'renewal', 'downgrade'],
+    },
+  }],
+
   // Metadata
   metadata: {
     type: Map,

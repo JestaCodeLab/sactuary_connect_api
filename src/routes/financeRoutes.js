@@ -6,7 +6,7 @@ import { requireFeature } from '../middleware/featureGate.js';
 
 const router = express.Router();
 
-router.get('/overview', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), getFinanceOverview);
+router.get('/overview', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), requireFeature('financial_reporting'), getFinanceOverview);
 router.get('/reports', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), requireFeature('advanced_financial_reporting'), getFinanceReport);
 
 export default router;

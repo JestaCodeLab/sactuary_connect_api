@@ -2,6 +2,7 @@ import Donation from '../models/Donation.js';
 import Organization from '../models/Organization.js';
 import { branchFilter, resolveCreateBranch } from '../utils/branchQuery.js';
 import transporter, { hasEmailConfig } from '../config/email.js';
+import { checkDonationLimit } from '../utils/usageLimits.js';
 
 export const getAllDonations = async (req, res) => {
   try {
@@ -45,6 +46,17 @@ export const createDonation = async (req, res) => {
     const branchId = resolveCreateBranch(req);
     if (!branchId) {
       return res.status(400).json({ error: 'Branch is required' });
+    }
+
+    // Check donation transaction limit
+    const limitCheck = await checkDonationLimit(req.organizationId);
+    if (!limitCheck.allowed) {
+      return res.status(403).json({
+        error: `Donation transaction limit reached for this month. Current: ${limitCheck.current}/${limitCheck.limit}`,
+        code: 'DONATION_LIMIT_EXCEEDED',
+        current: limitCheck.current,
+        limit: limitCheck.limit,
+      });
     }
 
     const donation = new Donation({
