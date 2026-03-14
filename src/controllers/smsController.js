@@ -6,6 +6,7 @@ import Member from '../models/Member.js';
 import Department from '../models/Department.js';
 import Branch from '../models/Branch.js';
 import Organization from '../models/Organization.js';
+import Transaction from '../models/Transaction.js';
 import { checkSmsCredits } from '../utils/usageLimits.js';
 import axios from 'axios';
 
@@ -77,13 +78,30 @@ export const purchaseCredits = async (req, res) => {
     }
 
     const smsCredit = await SmsCredit.getOrCreate(merchantId, 0);
-    
+
     await smsCredit.addCredits(
       amount,
       'purchase',
       `Credits purchased via ${paymentMethod || 'payment'}`,
       transactionId
     );
+
+    // Record in unified transaction ledger
+    await Transaction.create({
+      organizationId: merchantId,
+      type: 'sms_credit_purchase',
+      direction: 'outflow',
+      amount,
+      currency: 'GHS',
+      status: 'completed',
+      paymentMethod,
+      providerReference: transactionId,
+      relatedModel: 'SmsCredit',
+      relatedId: smsCredit._id,
+      description: `Purchased ${amount} SMS credits`,
+      initiatedBy: req.user.userId,
+      metadata: { creditsAmount: amount },
+    });
 
     res.json({
       success: true,
@@ -227,6 +245,34 @@ export const verifySmsPayment = async (req, res) => {
     payment.status = 'completed';
     payment.completedAt = new Date();
     await payment.save();
+
+    // Record transaction in all transactions
+    const transaction = new Transaction({
+      organizationId,
+      type: 'sms_credit_purchase',
+      direction: 'outflow',
+      amount: payment.amountInGhs,
+      subtotal: payment.amountInGhs,
+      taxAmount: 0,
+      taxRate: 0,
+      currency: 'GHS',
+      status: 'completed',
+      paymentMethod: data.channel,
+      paymentProvider: 'paystack',
+      providerReference: paystackReference,
+      channel: data.channel,
+      relatedModel: 'SmsCredit',
+      relatedId: smsCredit._id,
+      description: `SMS Credit Purchase - ${payment.credits} credits`,
+      initiatedBy: req.user._id,
+      metadata: {
+        credits: payment.credits,
+        pricePerCredit: PRICE_PER_CREDIT,
+        paystackCustomerCode: data.customer?.customer_code,
+      }
+    });
+
+    await transaction.save();
 
     res.json({
       success: true,

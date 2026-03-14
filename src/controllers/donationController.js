@@ -1,5 +1,6 @@
 import Donation from '../models/Donation.js';
 import Organization from '../models/Organization.js';
+import Transaction from '../models/Transaction.js';
 import { branchFilter, resolveCreateBranch } from '../utils/branchQuery.js';
 import transporter, { hasEmailConfig } from '../config/email.js';
 import { checkDonationLimit } from '../utils/usageLimits.js';
@@ -73,6 +74,25 @@ export const createDonation = async (req, res) => {
     });
 
     await donation.save();
+
+    // Record in unified transaction ledger
+    await Transaction.create({
+      organizationId: req.organizationId,
+      branchId,
+      type: 'donation',
+      direction: 'inflow',
+      amount,
+      currency: 'GHS',
+      status: 'completed',
+      paymentMethod,
+      providerReference: transactionId,
+      relatedModel: 'Donation',
+      relatedId: donation._id,
+      description: `${donationType || 'General'} donation`,
+      initiatedBy: req.user.userId,
+      metadata: { donorId, donationType, fundBucketId },
+    });
+
     res.status(201).json(donation);
   } catch (error) {
     console.error('Error creating donation:', error);

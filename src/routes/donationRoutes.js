@@ -9,14 +9,15 @@ import {
 } from '../controllers/donationController.js';
 import { authenticateToken, authorizeRole } from '../middleware/auth.js';
 import { resolveBranchContext } from '../middleware/branchContext.js';
+import { requireFeature } from '../middleware/featureGate.js';
 
 const router = express.Router();
 
-router.get('/stats/summary', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), getDonationStats);
-router.get('/', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), getAllDonations);
-router.get('/:id', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), getDonationById);
-router.post('/', authenticateToken, resolveBranchContext, createDonation);
-router.put('/:id', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), updateDonation);
-router.post('/:id/receipt', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), sendReceipt);
+router.get('/stats/summary', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), requireFeature('online_giving'), getDonationStats);
+router.get('/', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), requireFeature('online_giving'), getAllDonations);
+router.get('/:id', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), requireFeature('online_giving'), getDonationById);
+router.post('/', authenticateToken, resolveBranchContext, requireFeature('online_giving'), createDonation);
+router.put('/:id', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), requireFeature('online_giving'), updateDonation);
+router.post('/:id/receipt', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), requireFeature('online_giving'), sendReceipt);
 
 export default router;

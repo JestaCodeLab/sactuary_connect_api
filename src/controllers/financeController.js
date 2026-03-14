@@ -1,5 +1,6 @@
 import Donation from '../models/Donation.js';
 import Expense from '../models/Expense.js';
+import Transaction from '../models/Transaction.js';
 import { branchFilter, resolveCreateBranch } from '../utils/branchQuery.js';
 
 export const getFinanceOverview = async (req, res) => {
@@ -179,7 +180,124 @@ export const getFinanceReport = async (req, res) => {
   }
 };
 
+export const getTransactions = async (req, res) => {
+  try {
+    const { type, direction, status, startDate, endDate, page = 1, limit = 20 } = req.query;
+
+    const filter = branchFilter(req);
+    if (type) filter.type = type;
+    if (direction) filter.direction = direction;
+    if (status) filter.status = status;
+    if (startDate || endDate) {
+      filter.createdAt = {};
+      if (startDate) filter.createdAt.$gte = new Date(startDate);
+      if (endDate) filter.createdAt.$lte = new Date(endDate);
+    }
+
+    const pageNum = Math.max(1, parseInt(page));
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
+    const skip = (pageNum - 1) * limitNum;
+
+    const [transactions, total] = await Promise.all([
+      Transaction.find(filter)
+        .populate('initiatedBy', 'firstName lastName')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limitNum),
+      Transaction.countDocuments(filter),
+    ]);
+
+    res.json({
+      transactions,
+      total,
+      page: pageNum,
+      limit: limitNum,
+      totalPages: Math.ceil(total / limitNum),
+    });
+  } catch (error) {
+    console.error('Error fetching transactions:', error);
+    res.status(500).json({ error: 'Failed to fetch transactions' });
+  }
+};
+
+export const getTransactionSummary = async (req, res) => {
+  try {
+    const { type, startDate, endDate } = req.query;
+
+    const filter = branchFilter(req);
+    if (type) filter.type = type;
+    if (startDate || endDate) {
+      filter.createdAt = {};
+      if (startDate) filter.createdAt.$gte = new Date(startDate);
+      if (endDate) filter.createdAt.$lte = new Date(endDate);
+    }
+
+    const [summary, byType] = await Promise.all([
+      Transaction.aggregate([
+        { $match: filter },
+        {
+          $group: {
+            _id: '$direction',
+            total: { $sum: '$amount' },
+            count: { $sum: 1 },
+          },
+        },
+      ]),
+      Transaction.aggregate([
+        { $match: filter },
+        {
+          $group: {
+            _id: { type: '$type', direction: '$direction' },
+            total: { $sum: '$amount' },
+            count: { $sum: 1 },
+          },
+        },
+      ]),
+    ]);
+
+    const inflow = summary.find((s) => s._id === 'inflow');
+    const outflow = summary.find((s) => s._id === 'outflow');
+
+    res.json({
+      totalInflow: inflow?.total || 0,
+      totalOutflow: outflow?.total || 0,
+      net: (inflow?.total || 0) - (outflow?.total || 0),
+      totalCount: (inflow?.count || 0) + (outflow?.count || 0),
+      byType: byType.map((t) => ({
+        type: t._id.type,
+        direction: t._id.direction,
+        total: t.total,
+        count: t.count,
+      })),
+    });
+  } catch (error) {
+    console.error('Error fetching transaction summary:', error);
+    res.status(500).json({ error: 'Failed to fetch transaction summary' });
+  }
+};
+
+export const getTransactionById = async (req, res) => {
+  try {
+    const transaction = await Transaction.findOne({
+      _id: req.params.id,
+      ...branchFilter(req),
+    }).populate('initiatedBy', 'firstName lastName');
+
+    if (!transaction) {
+      return res.status(404).json({ error: 'Transaction not found' });
+    }
+
+    res.json(transaction);
+  } catch (error) {
+    console.error('Error fetching transaction:', error);
+    res.status(500).json({ error: 'Failed to fetch transaction' });
+  }
+};
+
 export default {
   getFinanceOverview,
   getFinanceReport,
+  getTransactions,
+  getTransactionSummary,
+  getTransactionById,
 };

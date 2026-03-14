@@ -5,7 +5,9 @@ import Branch from '../models/Branch.js';
 import Department from '../models/Department.js';
 import Event from '../models/Event.js';
 import SmsLog from '../models/SmsLog.js';
+import SmsCredit from '../models/SmsCredit.js';
 import Donation from '../models/Donation.js';
+import Transaction from '../models/Transaction.js';
 import { PLANS, getAnnualPrice, getPlanById, getAllPlans, getPublicPlans } from '../config/plans.js';
 import { verifyTransaction, initializeTransaction } from '../services/paystackService.js';
 import { branchFilter } from '../utils/branchQuery.js';
@@ -177,6 +179,43 @@ export const createSubscription = async (req, res) => {
       subscriptionId: subscription._id,
       updatedAt: new Date(),
     });
+
+    // Credit SMS based on plan
+    if (plan.limits.smsCredits > 0) {
+      const smsCredits = await SmsCredit.getOrCreate(organizationId, 0);
+      await smsCredits.addCredits(
+        plan.limits.smsCredits,
+        'bonus',
+        `SMS credits from ${plan.name} subscription`,
+        paystackData?.reference || 'initial'
+      );
+    }
+
+    // Record in unified transaction ledger
+    if (plan.price > 0 && paystackData) {
+      const subtotal = price;
+      const taxAmount = Math.round(price * TAX_RATE);
+      await Transaction.create({
+        organizationId,
+        type: 'subscription_payment',
+        direction: 'inflow',
+        amount: paystackData.amount / 100,
+        subtotal,
+        taxAmount,
+        taxRate: TAX_RATE,
+        currency: paystackData.currency || 'GHS',
+        status: 'completed',
+        paymentMethod: paystackData.channel === 'mobile_money' ? 'momo' : 'card',
+        paymentProvider: 'paystack',
+        providerReference: paystackData.reference,
+        channel: paystackData.channel,
+        relatedModel: 'Subscription',
+        relatedId: subscription._id,
+        description: `Initial subscription - ${plan.name} plan`,
+        initiatedBy: req.user.userId,
+        metadata: { planId, billingCycle: billingCycle || 'monthly', upgradeType: 'initial' },
+      });
+    }
 
     res.status(201).json({
       message: 'Subscription created successfully',
@@ -461,6 +500,7 @@ export const checkLimits = async (req, res) => {
       planId: subscription.planId,
       planName: plan?.name,
       limits: plan?.limits,
+      planFeatures: plan?.features,
       usage: usageWithCounts,
       withinLimits: {
         members: plan?.limits.maxMembers === -1 || membersCount <= plan?.limits.maxMembers,
@@ -647,6 +687,41 @@ export const verifyUpgrade = async (req, res) => {
     });
 
     await subscription.save();
+
+    // Record in unified transaction ledger
+    const subtotal = price;
+    const taxAmount = Math.round(price * TAX_RATE);
+    await Transaction.create({
+      organizationId,
+      type: 'subscription_payment',
+      direction: 'inflow',
+      amount: verification.data.amount / 100,
+      subtotal,
+      taxAmount,
+      taxRate: TAX_RATE,
+      currency: verification.data.currency || 'GHS',
+      status: 'completed',
+      paymentMethod: verification.data.channel === 'mobile_money' ? 'momo' : 'card',
+      paymentProvider: 'paystack',
+      providerReference: verification.data.reference,
+      channel: verification.data.channel,
+      relatedModel: 'Subscription',
+      relatedId: subscription._id,
+      description: `${isUpgrade ? 'Upgrade' : 'Renewal'} - ${newPlan.name} plan`,
+      initiatedBy: req.user.userId,
+      metadata: { planId, billingCycle, upgradeType: isUpgrade ? 'upgrade' : 'renewal' },
+    });
+
+    // Credit SMS based on new plan
+    if (newPlan.limits.smsCredits > 0) {
+      const smsCredits = await SmsCredit.getOrCreate(organizationId, 0);
+      await smsCredits.addCredits(
+        newPlan.limits.smsCredits,
+        'bonus',
+        `SMS credits from ${newPlan.name} subscription`,
+        reference
+      );
+    }
 
     res.json({
       message: `Successfully ${isUpgrade ? 'upgraded' : 'changed'} to ${newPlan.name}`,

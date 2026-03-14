@@ -1,4 +1,5 @@
 import Expense from '../models/Expense.js';
+import Transaction from '../models/Transaction.js';
 import { branchFilter, resolveCreateBranch } from '../utils/branchQuery.js';
 
 export const getAllExpenses = async (req, res) => {
@@ -54,6 +55,23 @@ export const createExpense = async (req, res) => {
       receiptUrl,
       paymentMethod,
       approvedBy: req.user.userId,
+    });
+
+    // Record in unified transaction ledger
+    await Transaction.create({
+      organizationId: req.organizationId,
+      branchId,
+      type: 'expense',
+      direction: 'outflow',
+      amount,
+      currency: 'GHS',
+      status: 'completed',
+      paymentMethod,
+      relatedModel: 'Expense',
+      relatedId: expense._id,
+      description: `${category} expense${vendor ? ` - ${vendor}` : ''}`,
+      initiatedBy: req.user.userId,
+      metadata: { category, vendor },
     });
 
     res.status(201).json(expense);
