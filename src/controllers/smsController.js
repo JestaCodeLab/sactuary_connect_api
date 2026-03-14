@@ -1,4 +1,5 @@
 import smsService from '../services/smsService.js';
+import notificationService from '../services/notificationService.js';
 import SmsCredit from '../models/SmsCredit.js';
 import SmsPayment from '../models/SmsPayment.js';
 import SmsLog from '../models/SmsLog.js';
@@ -274,6 +275,26 @@ export const verifySmsPayment = async (req, res) => {
 
     await transaction.save();
 
+    // Send notification
+    try {
+      await notificationService.createNotification(
+        req.user.userId,
+        organizationId,
+        'sms_payment_completed',
+        `✓ SMS credits purchased: ${payment.credits} credits`,
+        `You have successfully purchased ${payment.credits} SMS credits for GHS ${payment.amountInGhs.toFixed(2)}. New balance: ${smsCredit.balance} credits.`,
+        {
+          priority: 'high',
+          channels: { inApp: true, email: true },
+          relatedModel: 'SmsPayment',
+          relatedModelId: payment._id,
+          actionUrl: '/dashboard/communications/sms',
+        }
+      );
+    } catch (notificationError) {
+      console.error('Error sending SMS payment notification:', notificationError);
+    }
+
     res.json({
       success: true,
       message: `Successfully purchased ${payment.credits} SMS credits`,
@@ -297,6 +318,25 @@ export const verifySmsPayment = async (req, res) => {
           }
         );
       }
+    }
+
+    // Send failure notification
+    try {
+      await notificationService.createNotification(
+        req.user.userId,
+        organizationId,
+        'sms_payment_failed',
+        '❌ SMS payment failed',
+        'Your SMS credit purchase could not be completed. Please try again.',
+        {
+          priority: 'high',
+          channels: { inApp: true, email: true },
+          relatedModel: 'SmsPayment',
+          actionUrl: '/dashboard/communications/sms',
+        }
+      );
+    } catch (notificationError) {
+      console.error('Error sending payment failure notification:', notificationError);
     }
 
     res.status(500).json({ 

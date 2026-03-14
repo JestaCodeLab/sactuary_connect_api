@@ -28,6 +28,8 @@ import financeRoutes from './routes/financeRoutes.js';
 import userBranchRoutes from './routes/userBranchRoutes.js';
 import smsRoutes from './routes/smsRoutes.js';
 import settingsRoutes from './routes/settingsRoutes.js';
+import shepherdAlertRoutes from './routes/shepherdAlertRoutes.js';
+import notificationRoutes from './routes/notificationRoutes.js';
 
 dotenv.config();
 
@@ -67,6 +69,8 @@ app.use('/api/finance', financeRoutes);
 app.use('/api', userBranchRoutes);
 app.use('/api/sms', smsRoutes);
 app.use('/api/settings', settingsRoutes);
+app.use('/api/shepherd-alerts', shepherdAlertRoutes);
+app.use('/api/notifications', notificationRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {

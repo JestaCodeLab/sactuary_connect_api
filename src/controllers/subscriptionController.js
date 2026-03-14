@@ -10,6 +10,7 @@ import Donation from '../models/Donation.js';
 import Transaction from '../models/Transaction.js';
 import { PLANS, getAnnualPrice, getPlanById, getAllPlans, getPublicPlans } from '../config/plans.js';
 import { verifyTransaction, initializeTransaction } from '../services/paystackService.js';
+import notificationService from '../services/notificationService.js';
 import { branchFilter } from '../utils/branchQuery.js';
 
 const TAX_RATE = 0.1; // 10% platform tax
@@ -217,6 +218,26 @@ export const createSubscription = async (req, res) => {
       });
     }
 
+    // Send notification
+    try {
+      await notificationService.createNotification(
+        req.user.userId,
+        organizationId,
+        'subscription_created',
+        `✓ Subscription activated: ${plan.name} plan`,
+        `Your ${plan.name} subscription is now active. You have access to all ${plan.name} features.`,
+        {
+          priority: 'high',
+          channels: { inApp: true, email: true },
+          relatedModel: 'Subscription',
+          relatedModelId: subscription._id,
+          actionUrl: '/dashboard/settings/subscription',
+        }
+      );
+    } catch (notificationError) {
+      console.error('Error sending subscription notification:', notificationError);
+    }
+
     res.status(201).json({
       message: 'Subscription created successfully',
       subscription,
@@ -314,9 +335,36 @@ export const updateSubscription = async (req, res) => {
       subscription.billingAddress = billingAddress;
     }
 
+    const oldPlanId = subscription.planId;
     await subscription.save();
 
     const plan = getPlanById(subscription.planId);
+    const oldPlan = getPlanById(oldPlanId);
+
+    // Send notification for plan change
+    if (planId && planId !== oldPlanId) {
+      try {
+        const isUpgrade = plan.tier > oldPlan.tier;
+        await notificationService.createNotification(
+          req.user.userId,
+          organizationId,
+          isUpgrade ? 'subscription_upgraded' : 'subscription_downgraded',
+          isUpgrade ? `🚀 Plan upgraded: ${plan.name}` : `Plan changed: ${plan.name}`,
+          isUpgrade
+            ? `Your subscription has been upgraded to ${plan.name} with more features and capacity.`
+            : `Your subscription has been changed to ${plan.name}. Some features may be restricted.`,
+          {
+            priority: 'high',
+            channels: { inApp: true, email: true },
+            relatedModel: 'Subscription',
+            relatedModelId: subscription._id,
+            actionUrl: '/dashboard/settings/subscription',
+          }
+        );
+      } catch (notificationError) {
+        console.error('Error sending subscription update notification:', notificationError);
+      }
+    }
 
     res.json({
       message: 'Subscription updated successfully',
@@ -353,6 +401,28 @@ export const cancelSubscription = async (req, res) => {
     }
 
     await subscription.save();
+
+    // Send notification
+    try {
+      await notificationService.createNotification(
+        req.user.userId,
+        organizationId,
+        'subscription_cancelled',
+        '❌ Subscription cancelled',
+        cancelImmediately
+          ? 'Your subscription has been cancelled immediately. You will lose access to paid features.'
+          : 'Your subscription will be cancelled at the end of your billing period.',
+        {
+          priority: 'high',
+          channels: { inApp: true, email: true },
+          relatedModel: 'Subscription',
+          relatedModelId: subscription._id,
+          actionUrl: '/dashboard/settings/subscription',
+        }
+      );
+    } catch (notificationError) {
+      console.error('Error sending cancellation notification:', notificationError);
+    }
 
     res.json({
       message: cancelImmediately
@@ -734,6 +804,57 @@ export const verifyUpgrade = async (req, res) => {
   }
 };
 
+/**
+ * Debug endpoint - Get current user's subscription details
+ * GET /api/subscriptions/debug/me
+ */
+export const getMySubscriptionDebug = async (req, res) => {
+  try {
+    const { organizationId } = req.user;
+    
+    if (!organizationId) {
+      return res.status(400).json({ error: 'No organizationId in user token' });
+    }
+
+    const org = await Organization.findById(organizationId);
+    if (!org) {
+      return res.status(404).json({ error: 'Organization not found' });
+    }
+
+    const subscription = await Subscription.findOne({ organizationId: org._id });
+    
+    if (!subscription) {
+      return res.status(404).json({
+        error: 'No subscription found',
+        organizationId: org._id,
+      });
+    }
+
+    const plan = getPlanById(subscription.planId);
+
+    res.json({
+      found: true,
+      subscription: {
+        id: subscription._id,
+        organizationId: subscription.organizationId,
+        planId: subscription.planId,
+        status: subscription.status,
+        createdAt: subscription.createdAt,
+        currentPeriodStart: subscription.currentPeriodStart,
+        currentPeriodEnd: subscription.currentPeriodEnd,
+      },
+      plan: plan ? {
+        id: plan.id,
+        name: plan.name,
+        features: plan.features.map(f => ({ key: f.key, name: f.name, included: f.included })),
+      } : null,
+    });
+  } catch (error) {
+    console.error('Debug subscription error:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
 export default {
   getPlans,
   getPlan,
@@ -747,4 +868,5 @@ export default {
   updateUsage,
   initializeUpgrade,
   verifyUpgrade,
+  getMySubscriptionDebug,
 };

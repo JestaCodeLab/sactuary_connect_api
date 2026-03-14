@@ -12,6 +12,7 @@ import {
   updateUsage,
   initializeUpgrade,
   verifyUpgrade,
+  getMySubscriptionDebug,
 } from '../controllers/subscriptionController.js';
 import { authenticateToken, authorizeRole } from '../middleware/auth.js';
 import { resolveBranchContext } from '../middleware/branchContext.js';
@@ -24,6 +25,7 @@ router.get('/plans/:planId', getPlan);
 
 // Protected routes - require authentication
 router.post('/', authenticateToken, authorizeRole(['admin']), createSubscription);
+router.get('/debug/me', authenticateToken, getMySubscriptionDebug);
 router.get('/:organizationId', authenticateToken, getSubscription);
 router.put('/:organizationId', authenticateToken, authorizeRole(['admin']), updateSubscription);
 

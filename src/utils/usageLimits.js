@@ -76,7 +76,7 @@ export const checkBranchLimit = async (organizationId) => {
  */
 export const checkSmsCredits = async (organizationId, smsCountRequired = 1) => {
   try {
-    const smsCredit = await SmsCredit.findOne({ organizationId });
+    const smsCredit = await SmsCredit.findOne({ merchantId: organizationId });
     if (!smsCredit) {
       return { allowed: false, currentBalance: 0, required: smsCountRequired, reason: 'No SMS credits' };
     }
