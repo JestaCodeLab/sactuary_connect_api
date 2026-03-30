@@ -41,8 +41,6 @@ app.use(helmet());
 app.use(cors({
   origin: [
     'http://localhost:3000',
-    'https://www.sanctuaryconnect.org',
-    'https://sanctuaryconnect.org',
     'https://app.sanctuaryconnect.org',
     process.env.CLIENT_URL,
   ].filter(Boolean),

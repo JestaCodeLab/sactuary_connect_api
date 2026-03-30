@@ -36,7 +36,7 @@ async function refreshRecurringQRCodes() {
         const expiresAt = new Date(occurrence.endDate);
         expiresAt.setHours(expiresAt.getHours() + 2);
 
-        const checkInUrl = `${process.env.CLIENT_URL || 'http://localhost:3000'}/check-in/${token}`;
+        const checkInUrl = `${process.env.CLIENT_URL || 'https://app.sanctuaryconnect.org'}/check-in/${token}`;
         const dataUrl = await QRCode.toDataURL(checkInUrl, {
           errorCorrectionLevel: 'M',
           width: 400,
