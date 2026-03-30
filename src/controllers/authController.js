@@ -134,6 +134,9 @@ export const resendVerificationCode = async (req, res) => {
       expiresAt: new Date(Date.now() + 10 * 60 * 1000),
     });
 
+    // Send verification email
+    await sendVerificationEmail(email, user.firstName, verificationCode);
+
     res.json({ message: 'Verification code sent' });
   } catch (error) {
     console.error('Resend error:', error);
@@ -283,6 +286,43 @@ export const resetPassword = async (req, res) => {
   }
 };
 
+export const refreshToken = async (req, res) => {
+  try {
+    // User must be authenticated - middleware will validate JWT
+    const userId = req.user?.id || req.user?.userId;
+    const organizationId = req.user?.organizationId || null;
+    
+    if (!userId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    // Fetch fresh user data
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Generate new token
+    const newToken = generateToken(user._id.toString(), user.role, organizationId);
+
+    res.json({
+      message: 'Session refreshed successfully',
+      user: {
+        id: user._id,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        role: user.role,
+        organizationId: organizationId,
+      },
+      token: newToken,
+    });
+  } catch (error) {
+    console.error('Refresh token error:', error);
+    res.status(500).json({ error: 'Failed to refresh session' });
+  }
+};
+
 export default {
   register,
   verifyEmail,
@@ -290,4 +330,5 @@ export default {
   login,
   forgotPassword,
   resetPassword,
+  refreshToken,
 };

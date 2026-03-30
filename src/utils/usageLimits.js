@@ -47,16 +47,22 @@ export const checkBranchLimit = async (organizationId) => {
   try {
     const subscription = await Subscription.findOne({ organizationId });
     if (!subscription) {
+      console.log('❌ [BRANCH LIMIT] No subscription found for org:', organizationId);
       return { allowed: false, current: 0, limit: 0, reason: 'No active subscription' };
     }
 
+    console.log('✅ [BRANCH LIMIT] Subscription found:', { planId: subscription.planId, status: subscription.status });
+
     const plan = PLANS[subscription.planId];
     if (!plan) {
+      console.log('❌ [BRANCH LIMIT] Invalid plan ID:', subscription.planId);
       return { allowed: false, current: 0, limit: 0, reason: 'Invalid plan' };
     }
 
     const branchCount = await Branch.countDocuments({ organizationId });
     const limit = plan.limits.maxBranches;
+
+    console.log('📊 [BRANCH LIMIT] Check result:', { branchCount, limit, allowed: branchCount < limit });
 
     return {
       allowed: branchCount < limit,
@@ -65,7 +71,7 @@ export const checkBranchLimit = async (organizationId) => {
       remaining: Math.max(0, limit - branchCount),
     };
   } catch (error) {
-    console.error('Error checking branch limit:', error);
+    console.error('❌ [BRANCH LIMIT] Error checking branch limit:', error);
     throw error;
   }
 };

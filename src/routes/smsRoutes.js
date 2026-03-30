@@ -19,6 +19,14 @@ import {
   updateDeliveryStatus,
   batchUpdateDeliveryStatuses
 } from '../controllers/smsController.js';
+import {
+  getTemplates,
+  getTemplate,
+  createTemplate,
+  updateTemplate,
+  deleteTemplate,
+  duplicateTemplate
+} from '../controllers/smsTemplateController.js';
 import { authenticateToken } from '../middleware/auth.js';
 import { resolveBranchContext } from '../middleware/branchContext.js';
 import { requireFeature } from '../middleware/featureGate.js';
@@ -52,6 +60,14 @@ router.get('/analytics', requireFeature('sms_credits'), getSmsAnalytics);
 // Delivery status updates
 router.post('/logs/:id/update-status', requireFeature('sms_credits'), updateDeliveryStatus);
 router.post('/logs/batch-update-status', requireFeature('sms_credits'), batchUpdateDeliveryStatuses);
+
+// SMS Templates
+router.get('/templates', requireFeature('sms_credits'), getTemplates);
+router.get('/templates/:id', requireFeature('sms_credits'), getTemplate);
+router.post('/templates', requireFeature('sms_credits'), createTemplate);
+router.put('/templates/:id', requireFeature('sms_credits'), updateTemplate);
+router.delete('/templates/:id', requireFeature('sms_credits'), deleteTemplate);
+router.post('/templates/:id/duplicate', requireFeature('sms_credits'), duplicateTemplate);
 
 // Utilities
 router.get('/members/available', requireFeature('sms_credits'), getAvailableMembers);

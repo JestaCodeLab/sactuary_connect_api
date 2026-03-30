@@ -3,6 +3,7 @@ import {
   getPlans,
   getPlan,
   createSubscription,
+  initializeCheckout,
   getSubscription,
   updateSubscription,
   cancelSubscription,
@@ -25,6 +26,7 @@ router.get('/plans/:planId', getPlan);
 
 // Protected routes - require authentication
 router.post('/', authenticateToken, authorizeRole(['admin']), createSubscription);
+router.post('/initialize-checkout', authenticateToken, authorizeRole(['admin']), initializeCheckout);
 router.get('/debug/me', authenticateToken, getMySubscriptionDebug);
 router.get('/:organizationId', authenticateToken, getSubscription);
 router.put('/:organizationId', authenticateToken, authorizeRole(['admin']), updateSubscription);

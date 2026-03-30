@@ -1,5 +1,6 @@
 import Subscription from '../models/Subscription.js';
 import Organization from '../models/Organization.js';
+import User from '../models/User.js';
 import Member from '../models/Member.js';
 import Branch from '../models/Branch.js';
 import Department from '../models/Department.js';
@@ -96,7 +97,17 @@ export const createSubscription = async (req, res) => {
     // Check if subscription already exists
     const existingSubscription = await Subscription.findOne({ organizationId });
     if (existingSubscription) {
-      return res.status(400).json({ error: 'Organization already has a subscription. Use update instead.' });
+      // If trying to upgrade from seed plan (free), handle as upgrade
+      if (existingSubscription.planId === 'seed' && plan.price > 0) {
+        console.log('🔵 [SUBSCRIPTION] Upgrading from seed to:', planId);
+        // Continue to upgrade logic below
+      } else if (existingSubscription.planId === planId) {
+        // Same plan - no need to update
+        return res.status(400).json({ error: 'Organization already has this plan' });
+      } else {
+        // Downgrade or switching between paid plans - not allowed in this endpoint
+        return res.status(400).json({ error: 'Use update endpoint to change plans' });
+      }
     }
 
     // Determine price
@@ -135,12 +146,11 @@ export const createSubscription = async (req, res) => {
       periodEnd = new Date(new Date(now).setMonth(now.getMonth() + 1));
     }
 
-    // Create subscription
     // Initialize usage with current counts
     const membersCount = await Member.countDocuments({ organizationId });
     const branchesCount = await Branch.countDocuments({ organizationId });
 
-    const subscription = await Subscription.create({
+    const subscriptionData = {
       organizationId,
       planId,
       billingCycle: billingCycle || 'monthly',
@@ -173,7 +183,22 @@ export const createSubscription = async (req, res) => {
         amount: price,
         currency: plan.currency,
       },
-    });
+    };
+
+    // Create or update subscription (handle upgrade from seed plan)
+    let subscription;
+    if (existingSubscription && existingSubscription.planId === 'seed' && plan.price > 0) {
+      // Upgrade from seed to paid plan
+      console.log('🟢 [SUBSCRIPTION] Upgrading subscription:', { from: 'seed', to: planId });
+      subscription = await Subscription.findByIdAndUpdate(
+        existingSubscription._id,
+        subscriptionData,
+        { new: true }
+      );
+    } else {
+      // Create new subscription
+      subscription = await Subscription.create(subscriptionData);
+    }
 
     // Update organization with subscription reference
     await Organization.findByIdAndUpdate(organizationId, {
@@ -250,6 +275,94 @@ export const createSubscription = async (req, res) => {
 };
 
 /**
+ * Initialize Paystack checkout for subscription payment
+ * POST /api/subscriptions/initialize-checkout
+ */
+export const initializeCheckout = async (req, res) => {
+  try {
+    const {
+      organizationId,
+      planId,
+      billingCycle,
+      paymentMethod,
+      amount,
+    } = req.body;
+    const userId = req.user.userId;
+
+    // Validate required fields
+    if (!organizationId || !planId || !amount) {
+      return res.status(400).json({ error: 'Organization ID, plan ID, and amount are required' });
+    }
+
+    // Verify organization exists and belongs to user
+    const organization = await Organization.findById(organizationId);
+    if (!organization) {
+      return res.status(404).json({ error: 'Organization not found' });
+    }
+
+    // Verify user is admin of this organization
+    if (organization.adminId.toString() !== userId) {
+      return res.status(403).json({ error: 'Unauthorized to initialize payment for this organization' });
+    }
+
+    // Verify plan exists and has a price > 0
+    const plan = getPlanById(planId);
+    if (!plan) {
+      return res.status(400).json({ error: 'Invalid plan ID' });
+    }
+
+    if (plan.price === 0) {
+      return res.status(400).json({ error: 'Free plans do not require payment' });
+    }
+
+    // Get user email for payment
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Generate unique reference for this transaction
+    const reference = `sub_${organizationId}_${Date.now()}`;
+
+    // Build callback URL - redirect back to payment page with reference
+    const callbackUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/onboarding/payment?reference=${reference}`;
+
+    // Initialize Paystack transaction
+    try {
+      const paystackResult = await initializeTransaction({
+        email: user.email,
+        amount: Math.round(amount * 100), // Convert GHS to pesewas
+        currency: 'GHS',
+        reference,
+        callback_url: callbackUrl,
+        metadata: {
+          organizationId,
+          planId,
+          billingCycle: billingCycle || 'monthly',
+          paymentMethod,
+          organizationName: organization.churchName,
+        },
+        channels: paymentMethod === 'momo' ? ['mobile_money'] : ['card'],
+      });
+
+      console.log('🟢 [INIT CHECKOUT] Paystack checkout initialized:', { reference, url: paystackResult.authorization_url });
+
+      res.json({
+        reference,
+        authorizationUrl: paystackResult.authorization_url,
+        accessCode: paystackResult.access_code,
+      });
+    } catch (paystackError) {
+      console.error('🔴 [INIT CHECKOUT] Paystack error:', paystackError.message);
+      res.status(500).json({ error: 'Failed to initialize payment. Please try again.' });
+    }
+  } catch (error) {
+    console.error('Error initializing checkout:', error);
+    res.status(500).json({ error: error.message || 'Failed to initialize checkout' });
+  }
+};
+
+/**
  * Get subscription for an organization
  * GET /api/subscriptions/:organizationId
  */
@@ -257,11 +370,19 @@ export const getSubscription = async (req, res) => {
   try {
     const { organizationId } = req.params;
 
+    console.log('🔍 [GET SUBSCRIPTION] Looking for subscription:', { organizationId });
+
     const subscription = await Subscription.findOne({ organizationId });
 
     if (!subscription) {
+      console.log('❌ [GET SUBSCRIPTION] Subscription not found for org:', organizationId);
+      // Check if any subscriptions exist at all
+      const allSubs = await Subscription.countDocuments();
+      console.log('📊 [GET SUBSCRIPTION] Total subscriptions in DB:', allSubs);
       return res.status(404).json({ error: 'Subscription not found' });
     }
+
+    console.log('✅ [GET SUBSCRIPTION] Found subscription:', { planId: subscription.planId, status: subscription.status });
 
     const plan = getPlanById(subscription.planId);
 
@@ -271,7 +392,7 @@ export const getSubscription = async (req, res) => {
       isActive: subscription.status === 'active' || subscription.status === 'trialing',
     });
   } catch (error) {
-    console.error('Error fetching subscription:', error);
+    console.error('❌ [GET SUBSCRIPTION] Error fetching subscription:', error);
     res.status(500).json({ error: 'Failed to fetch subscription' });
   }
 };
@@ -647,6 +768,31 @@ export const initializeUpgrade = async (req, res) => {
       return res.status(404).json({ error: 'Organization not found' });
     }
 
+    // IDEMPOTENCY CHECK: If payment is already pending for this exact upgrade, return the same reference
+    // This prevents double-charging if user clicks "Pay" multiple times
+    const lastPendingPayment = subscription.paymentHistory && subscription.paymentHistory.length > 0
+      ? subscription.paymentHistory[subscription.paymentHistory.length - 1]
+      : null;
+
+    if (
+      lastPendingPayment &&
+      lastPendingPayment.status === 'pending' &&
+      lastPendingPayment.metadata?.planId === planId &&
+      lastPendingPayment.metadata?.billingCycle === billingCycle &&
+      (Date.now() - new Date(lastPendingPayment.createdAt).getTime()) < 30 * 60 * 1000 // 30 min window
+    ) {
+      // Return existing pending payment reference instead of creating new one
+      console.log(`[Payment Idempotency] Returning existing pending payment for org ${organizationId}`);
+      return res.json({
+        authorization_url: lastPendingPayment.metadata?.authorization_url,
+        access_code: lastPendingPayment.metadata?.access_code,
+        reference: lastPendingPayment.reference,
+        amount: lastPendingPayment.amount,
+        currency: lastPendingPayment.currency,
+        message: 'Returning existing pending payment (idempotent)',
+      });
+    }
+
     const price = billingCycle === 'annual' ? getAnnualPrice(newPlan.price) : newPlan.price;
     const total = Math.round((price + price * TAX_RATE) * 100); // pesewas
     const reference = `upgrade_${organizationId}_${Date.now()}`;
@@ -668,6 +814,26 @@ export const initializeUpgrade = async (req, res) => {
         type: 'upgrade',
       },
     });
+
+    // Record pending payment in history for idempotency check
+    subscription.paymentHistory.push({
+      reference,
+      amount: total / 100,
+      currency: newPlan.currency || 'GHS',
+      channel: 'paystack_pending',
+      type: 'upgrade',
+      status: 'pending',
+      planId,
+      metadata: {
+        planId,
+        billingCycle,
+        type: 'upgrade',
+        authorization_url: result.authorization_url,
+        access_code: result.access_code,
+      },
+      createdAt: new Date(),
+    });
+    await subscription.save();
 
     res.json({
       authorization_url: result.authorization_url,

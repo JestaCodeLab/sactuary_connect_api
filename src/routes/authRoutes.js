@@ -5,8 +5,10 @@ import {
   verifyEmail, 
   resendVerificationCode,
   forgotPassword,
-  resetPassword
+  resetPassword,
+  refreshToken
 } from '../controllers/authController.js';
+import { authenticate } from '../middleware/auth.js';
 
 const router = express.Router();
 
@@ -16,5 +18,6 @@ router.post('/verify-email', verifyEmail);
 router.post('/resend-verification', resendVerificationCode);
 router.post('/forgot-password', forgotPassword);
 router.post('/reset-password', resetPassword);
+router.post('/refresh-token', authenticate, refreshToken);
 
 export default router;
