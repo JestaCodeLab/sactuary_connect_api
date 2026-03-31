@@ -2,7 +2,7 @@ import Donation from '../models/Donation.js';
 import Organization from '../models/Organization.js';
 import Transaction from '../models/Transaction.js';
 import { branchFilter, resolveCreateBranch } from '../utils/branchQuery.js';
-import transporter, { hasEmailConfig } from '../config/email.js';
+import resend, { hasEmailConfig, EMAIL_FROM } from '../config/email.js';
 import { checkDonationLimit } from '../utils/usageLimits.js';
 
 export const getAllDonations = async (req, res) => {
@@ -193,9 +193,9 @@ export const sendReceipt = async (req, res) => {
         return res.status(400).json({ error: 'Donor does not have an email address' });
       }
 
-      await transporter.sendMail({
-        from: process.env.EMAIL_FROM || process.env.EMAIL_USER,
-        to: recipientEmail,
+      const { error } = await resend.emails.send({
+        from: EMAIL_FROM,
+        to: [recipientEmail],
         subject: `Donation Receipt - ${churchName}`,
         html: `
           <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -215,6 +215,10 @@ export const sendReceipt = async (req, res) => {
         `,
         text: `Donation Receipt\n\nDear ${donorName},\n\nThank you for your donation to ${churchName}.\n\nDate: ${date}\nAmount: GHS ${amount}\nType: ${donation.donationType || 'General'}\nPayment: ${donation.paymentMethod?.replace('_', ' ') || 'N/A'}\n\nGod bless you.`,
       });
+
+      if (error) {
+        throw new Error(error.message);
+      }
 
       res.json({ message: `Receipt sent to ${recipientEmail}` });
     } else if (channel === 'sms') {
