@@ -1,5 +1,36 @@
-import transporter, { hasEmailConfig } from '../config/email.js';
+import transporter, { hasEmailConfig, isEmailServiceReady } from '../config/email.js';
 import { emailTemplates } from '../services/emailService.js';
+
+/**
+ * Send email with retry logic
+ */
+const sendEmailWithRetry = async (mailOptions, maxRetries = 2) => {
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const info = await transporter.sendMail(mailOptions);
+      return { success: true, info };
+    } catch (error) {
+      lastError = error;
+      console.warn(`⚠️  Email send attempt ${attempt}/${maxRetries} failed:`, error.message);
+      
+      // If it's a timeout, retry; otherwise give up
+      if (error.code === 'ETIMEDOUT' || error.code === 'ECONNREFUSED') {
+        if (attempt < maxRetries) {
+          console.log(`   Retrying in 2 seconds...`);
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          continue;
+        }
+      }
+      
+      // Non-retriable error or last attempt failed
+      return { success: false, error };
+    }
+  }
+
+  return { success: false, error: lastError };
+};
 
 /**
  * Send verification email with code
@@ -14,25 +45,31 @@ export const sendVerificationEmail = async (email, firstName, verificationCode) 
 
     const { subject, html, text } = emailTemplates.verification(firstName, verificationCode);
 
-    const info = await transporter.sendMail({
+    const result = await sendEmailWithRetry({
       from: process.env.EMAIL_FROM || process.env.EMAIL_USER,
       to: email,
       subject,
       html,
       text,
-    });
+    }, 2);
 
-    if (info.rejected && info.rejected.length > 0) {
-      console.warn('⚠️  Email rejected:', info.rejected);
+    if (!result.success) {
+      console.error('❌ Error sending verification email:', result.error?.message);
+      console.error('   Verification code (use this for testing):', verificationCode);
+      // Don't throw - registration should still succeed
+      return false;
+    }
+
+    if (result.info?.rejected && result.info.rejected.length > 0) {
+      console.warn('⚠️  Email rejected:', result.info.rejected);
       return false;
     }
 
     console.log('✓ Verification email sent to:', email);
     return true;
   } catch (error) {
-    console.error('❌ Error sending verification email:', error.message);
+    console.error('❌ Unexpected error in sendVerificationEmail:', error.message);
     console.error('   Verification code (use this for testing):', verificationCode);
-    // Don't throw - registration should still succeed
     return false;
   }
 };
@@ -51,23 +88,29 @@ export const sendPasswordResetEmail = async (email, firstName, resetToken) => {
     const resetLink = `${process.env.CLIENT_URL}/reset-password?token=${resetToken}`;
     const { subject, html, text } = emailTemplates.passwordReset(firstName, resetLink);
 
-    const info = await transporter.sendMail({
+    const result = await sendEmailWithRetry({
       from: process.env.EMAIL_FROM || process.env.EMAIL_USER,
       to: email,
       subject,
       html,
       text,
-    });
+    }, 2);
 
-    if (info.rejected && info.rejected.length > 0) {
-      console.warn('⚠️  Email rejected:', info.rejected);
+    if (!result.success) {
+      console.error('❌ Error sending password reset email:', result.error?.message);
+      console.error('   Reset token (use this for testing):', resetToken);
+      return false;
+    }
+
+    if (result.info?.rejected && result.info.rejected.length > 0) {
+      console.warn('⚠️  Email rejected:', result.info.rejected);
       return false;
     }
 
     console.log('✓ Password reset email sent to:', email);
     return true;
   } catch (error) {
-    console.error('❌ Error sending password reset email:', error.message);
+    console.error('❌ Unexpected error in sendPasswordResetEmail:', error.message);
     console.error('   Reset token (use this for testing):', resetToken);
     return false;
   }
@@ -85,23 +128,28 @@ export const sendWelcomeEmail = async (email, churchName) => {
 
     const { subject, html, text } = emailTemplates.welcome(churchName);
 
-    const info = await transporter.sendMail({
+    const result = await sendEmailWithRetry({
       from: process.env.EMAIL_FROM || process.env.EMAIL_USER,
       to: email,
       subject,
       html,
       text,
-    });
+    }, 2);
 
-    if (info.rejected && info.rejected.length > 0) {
-      console.warn('⚠️  Email rejected:', info.rejected);
+    if (!result.success) {
+      console.error('❌ Error sending welcome email:', result.error?.message);
+      return false;
+    }
+
+    if (result.info?.rejected && result.info.rejected.length > 0) {
+      console.warn('⚠️  Email rejected:', result.info.rejected);
       return false;
     }
 
     console.log('✓ Welcome email sent to:', email);
     return true;
   } catch (error) {
-    console.error('❌ Error sending welcome email:', error.message);
+    console.error('❌ Unexpected error in sendWelcomeEmail:', error.message);
     return false;
   }
 };
