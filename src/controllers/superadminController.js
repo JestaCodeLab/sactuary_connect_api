@@ -460,7 +460,7 @@ export const listBranches = async (req, res) => {
 
   const filter = {};
   if (search) {
-    filter.branchName = { $regex: search, $options: 'i' };
+    filter.name = { $regex: search, $options: 'i' };
   }
   if (orgId) {
     filter.organizationId = orgId;
@@ -497,27 +497,24 @@ export const getBranch = async (req, res) => {
 };
 
 export const createBranch = async (req, res) => {
-  const { organizationId, branchName, location, address, phone, email, isDefault = false } = req.body;
+  const { orgId, name, location, isHeadquarters = false } = req.body;
 
-  if (!organizationId || !branchName) {
-    return res.status(400).json({ error: 'organizationId and branchName are required' });
+  if (!orgId || !name) {
+    return res.status(400).json({ error: 'orgId and name are required' });
   }
 
-  const org = await Organization.findById(organizationId);
+  const org = await Organization.findById(orgId);
   if (!org) return res.status(404).json({ error: 'Organization not found' });
 
   const branch = await Branch.create({
-    organizationId,
-    branchName,
-    location,
-    address,
-    phone,
-    email,
-    isDefault,
+    organizationId: orgId,
+    name,
+    address: location,
+    isHeadOffice: isHeadquarters,
   });
 
   await log(req.user.userId, 'create_branch', {
-    targetOrgId: organizationId,
+    targetOrgId: orgId,
     details: { branchName, branchId: branch._id },
   });
 
@@ -526,25 +523,22 @@ export const createBranch = async (req, res) => {
 
 export const updateBranch = async (req, res) => {
   const { id } = req.params;
-  const { branchName, location, address, phone, email, isDefault } = req.body;
+  const { name, location, isHeadquarters } = req.body;
 
   const branch = await Branch.findById(id);
   if (!branch) return res.status(404).json({ error: 'Branch not found' });
 
-  const before = { branchName: branch.branchName };
+  const before = { name: branch.name };
 
-  if (branchName != null) branch.branchName = branchName;
-  if (location != null) branch.location = location;
-  if (address != null) branch.address = address;
-  if (phone != null) branch.phone = phone;
-  if (email != null) branch.email = email;
-  if (isDefault != null) branch.isDefault = isDefault;
+  if (name != null) branch.name = name;
+  if (location != null) branch.address = location;
+  if (isHeadquarters != null) branch.isHeadOffice = isHeadquarters;
 
   await branch.save();
 
   await log(req.user.userId, 'update_branch', {
     targetOrgId: branch.organizationId,
-    details: { branchId: id, before, after: { branchName: branch.branchName } },
+    details: { branchId: id, before, after: { name: branch.name } },
   });
 
   res.json({ message: 'Branch updated', branch });
@@ -574,7 +568,7 @@ export const deleteBranch = async (req, res) => {
 
   await log(req.user.userId, 'delete_branch', {
     targetOrgId: branch.organizationId,
-    details: { branchName: branch.branchName, branchId: id },
+    details: { name: branch.name, branchId: id },
   });
 
   res.json({ message: 'Branch deleted' });
@@ -588,7 +582,7 @@ export const listDepartments = async (req, res) => {
 
   const filter = {};
   if (search) {
-    filter.departmentName = { $regex: search, $options: 'i' };
+    filter.name = { $regex: search, $options: 'i' };
   }
   if (orgId) {
     filter.organizationId = orgId;
@@ -600,7 +594,7 @@ export const listDepartments = async (req, res) => {
   const [departments, total] = await Promise.all([
     Department.find(filter)
       .populate('organizationId', 'churchName')
-      .populate('branchId', 'branchName')
+      .populate('branchId', 'name')
       .populate('leaderId', 'firstName lastName')
       .sort({ createdAt: -1 })
       .skip(skip)
@@ -629,14 +623,14 @@ export const getDepartment = async (req, res) => {
 };
 
 export const createDepartment = async (req, res) => {
-  const { organizationId, branchId, departmentName, description, leaderId } = req.body;
+  const { orgId, branchId, name, description, leaderId } = req.body;
 
-  if (!organizationId || !branchId || !departmentName) {
-    return res.status(400).json({ error: 'organizationId, branchId, and departmentName are required' });
+  if (!orgId || !branchId || !name) {
+    return res.status(400).json({ error: 'orgId, branchId, and name are required' });
   }
 
   const [org, branch] = await Promise.all([
-    Organization.findById(organizationId),
+    Organization.findById(orgId),
     Branch.findById(branchId),
   ]);
 
@@ -644,16 +638,16 @@ export const createDepartment = async (req, res) => {
   if (!branch) return res.status(404).json({ error: 'Branch not found' });
 
   const department = await Department.create({
-    organizationId,
+    organizationId: orgId,
     branchId,
-    departmentName,
+    name,
     description,
     leaderId,
   });
 
   await log(req.user.userId, 'create_department', {
-    targetOrgId: organizationId,
-    details: { departmentName, departmentId: department._id },
+    targetOrgId: orgId,
+    details: { name, departmentId: department._id },
   });
 
   res.status(201).json({ message: 'Department created', department });
@@ -661,14 +655,14 @@ export const createDepartment = async (req, res) => {
 
 export const updateDepartment = async (req, res) => {
   const { id } = req.params;
-  const { departmentName, description, leaderId } = req.body;
+  const { name, description, leaderId } = req.body;
 
   const department = await Department.findById(id);
   if (!department) return res.status(404).json({ error: 'Department not found' });
 
-  const before = { departmentName: department.departmentName };
+  const before = { name: department.name };
 
-  if (departmentName != null) department.departmentName = departmentName;
+  if (name != null) department.name = name;
   if (description != null) department.description = description;
   if (leaderId !== undefined) department.leaderId = leaderId || null;
 
@@ -676,7 +670,7 @@ export const updateDepartment = async (req, res) => {
 
   await log(req.user.userId, 'update_department', {
     targetOrgId: department.organizationId,
-    details: { departmentId: id, before, after: { departmentName: department.departmentName } },
+    details: { departmentId: id, before, after: { name: department.name } },
   });
 
   res.json({ message: 'Department updated', department });
@@ -701,7 +695,7 @@ export const deleteDepartment = async (req, res) => {
 
   await log(req.user.userId, 'delete_department', {
     targetOrgId: department.organizationId,
-    details: { departmentName: department.departmentName, departmentId: id },
+    details: { name: department.name, departmentId: id },
   });
 
   res.json({ message: 'Department deleted' });
@@ -735,8 +729,8 @@ export const listMembers = async (req, res) => {
   const [members, total] = await Promise.all([
     Member.find(filter)
       .populate('organizationId', 'churchName')
-      .populate('branchId', 'branchName')
-      .populate('departmentId', 'departmentName')
+      .populate('branchId', 'name')
+      .populate('departments', 'name')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(Number(limit))
