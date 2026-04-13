@@ -103,6 +103,20 @@ export const verifyOrgOwnership = async (req, res, next) => {
   }
 };
 
+/**
+ * Gate a route to superadmin users only.
+ * Must be used after authenticateToken.
+ */
+export const requireSuperadmin = (req, res, next) => {
+  if (!req.user) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  if (req.user.role !== 'superadmin') {
+    return res.status(403).json({ error: 'Forbidden - superadmin access required' });
+  }
+  next();
+};
+
 // Alias for backward compatibility
 export const authenticate = authenticateToken;
 
