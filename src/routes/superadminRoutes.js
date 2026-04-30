@@ -34,6 +34,11 @@ import {
   deleteSmsPackage,
   getAuditLog,
   createSuperadmin,
+  listPendingFinanceAccounts,
+  getFinanceAccountDetails,
+  approveFinanceAccount,
+  rejectFinanceAccount,
+  revokeFinanceAccount,
 } from '../controllers/superadminController.js';
 
 const router = Router();
@@ -93,5 +98,12 @@ router.get('/audit-log', getAuditLog);
 
 // Create new superadmin (only existing superadmin can do this)
 router.post('/create-admin', createSuperadmin);
+
+// ===== FINANCE ACCOUNT APPROVALS =====
+router.get('/finance-accounts', listPendingFinanceAccounts);
+router.get('/finance-accounts/:id', getFinanceAccountDetails);
+router.post('/finance-accounts/:id/approve', approveFinanceAccount);
+router.post('/finance-accounts/:id/reject', rejectFinanceAccount);
+router.post('/finance-accounts/:id/revoke', revokeFinanceAccount);
 
 export default router;

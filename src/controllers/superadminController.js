@@ -10,6 +10,7 @@ import Branch from '../models/Branch.js';
 import Department from '../models/Department.js';
 import Event from '../models/Event.js';
 import AuditLog from '../models/AuditLog.js';
+import FinanceAccount from '../models/FinanceAccount.js';
 import { PLANS } from '../config/plans.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -936,6 +937,251 @@ export const deleteSmsPackage = async (req, res) => {
   if (!pkg) return res.status(404).json({ error: 'Package not found' });
   await log(req.user.userId, 'delete_sms_package', { details: { name: pkg.name } });
   res.json({ message: 'SMS package deleted' });
+};
+
+// ─── Finance Account Approval ─────────────────────────────────────────────────
+
+export const listPendingFinanceAccounts = async (req, res) => {
+  try {
+    const { status = 'pending', page = 1, limit = 20, search } = req.query;
+    const skip = (Number(page) - 1) * Number(limit);
+
+    const filter = {};
+    if (status) filter.status = status;
+
+    if (search) {
+      filter.$or = [
+        { businessName: { $regex: search, $options: 'i' } },
+        { ownerFullName: { $regex: search, $options: 'i' } },
+        { ownerEmail: { $regex: search, $options: 'i' } },
+      ];
+    }
+
+    const [accounts, total] = await Promise.all([
+      FinanceAccount.find(filter)
+        .populate('organizationId', 'churchName')
+        .populate('submittedBy', 'firstName lastName email')
+        .populate('approvedBy', 'firstName lastName email')
+        .sort({ submittedAt: -1 })
+        .skip(skip)
+        .limit(Number(limit))
+        .lean(),
+      FinanceAccount.countDocuments(filter),
+    ]);
+
+    res.json({
+      accounts,
+      total,
+      page: Number(page),
+      limit: Number(limit),
+      totalPages: Math.ceil(total / Number(limit)),
+    });
+  } catch (error) {
+    console.error('Error listing finance accounts:', error);
+    res.status(500).json({ error: 'Failed to list finance accounts' });
+  }
+};
+
+export const getFinanceAccountDetails = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const account = await FinanceAccount.findById(id)
+      .populate('organizationId', 'churchName legalName')
+      .populate('submittedBy', 'firstName lastName email')
+      .populate('approvedBy', 'firstName lastName email')
+      .populate('revokedBy', 'firstName lastName email')
+      .populate('statusHistory.changedBy', 'firstName lastName email')
+      .lean();
+
+    if (!account) {
+      return res.status(404).json({ error: 'Finance account not found' });
+    }
+
+    res.json(account);
+  } catch (error) {
+    console.error('Error fetching finance account details:', error);
+    res.status(500).json({ error: 'Failed to fetch finance account details' });
+  }
+};
+
+export const approveFinanceAccount = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { notes } = req.body;
+
+    const account = await FinanceAccount.findById(id);
+    if (!account) {
+      return res.status(404).json({ error: 'Finance account not found' });
+    }
+
+    if (account.status !== 'pending') {
+      return res.status(400).json({
+        error: `Cannot approve account with status: ${account.status}`,
+      });
+    }
+
+    // Update account status
+    account.status = 'approved';
+    account.approvedAt = Date.now();
+    account.approvedBy = req.user._id;
+    account.statusHistory.push({
+      status: 'approved',
+      changedBy: req.user._id,
+      notes: notes || 'Approved by superadmin',
+    });
+
+    await account.save();
+
+    // Update Organization's financeAccountId reference
+    await Organization.findByIdAndUpdate(account.organizationId, {
+      financeAccountId: account._id,
+    });
+
+    // Log to audit trail
+    await log(req.user._id, 'approve_finance_account', {
+      targetOrgId: account.organizationId,
+      details: {
+        financeAccountId: account._id,
+        businessName: account.businessName,
+        notes,
+      },
+    });
+
+    res.json({
+      message: 'Finance account approved successfully',
+      account: {
+        _id: account._id,
+        status: account.status,
+        approvedAt: account.approvedAt,
+      },
+    });
+  } catch (error) {
+    console.error('Error approving finance account:', error);
+    res.status(500).json({ error: 'Failed to approve finance account' });
+  }
+};
+
+export const rejectFinanceAccount = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { rejectionReason, rejectionDetails } = req.body;
+
+    if (!rejectionReason) {
+      return res.status(400).json({ error: 'rejectionReason is required' });
+    }
+
+    const account = await FinanceAccount.findById(id);
+    if (!account) {
+      return res.status(404).json({ error: 'Finance account not found' });
+    }
+
+    if (account.status !== 'pending') {
+      return res.status(400).json({
+        error: `Cannot reject account with status: ${account.status}`,
+      });
+    }
+
+    // Update account status
+    account.status = 'rejected';
+    account.rejectionReason = rejectionReason;
+    account.rejectionDetails = rejectionDetails || '';
+    account.statusHistory.push({
+      status: 'rejected',
+      changedBy: req.user._id,
+      notes: rejectionReason,
+    });
+
+    await account.save();
+
+    // Log to audit trail
+    await log(req.user._id, 'reject_finance_account', {
+      targetOrgId: account.organizationId,
+      details: {
+        financeAccountId: account._id,
+        businessName: account.businessName,
+        rejectionReason,
+      },
+    });
+
+    // TODO: Send email notification to organization admin with rejection reason
+
+    res.json({
+      message: 'Finance account rejected. Organization can resubmit.',
+      account: {
+        _id: account._id,
+        status: account.status,
+        rejectionReason: account.rejectionReason,
+      },
+    });
+  } catch (error) {
+    console.error('Error rejecting finance account:', error);
+    res.status(500).json({ error: 'Failed to reject finance account' });
+  }
+};
+
+export const revokeFinanceAccount = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { revokedReason } = req.body;
+
+    if (!revokedReason) {
+      return res.status(400).json({ error: 'revokedReason is required' });
+    }
+
+    const account = await FinanceAccount.findById(id);
+    if (!account) {
+      return res.status(404).json({ error: 'Finance account not found' });
+    }
+
+    if (account.status !== 'approved') {
+      return res.status(400).json({
+        error: `Can only revoke approved accounts. Current status: ${account.status}`,
+      });
+    }
+
+    // Update account status
+    account.status = 'revoked';
+    account.revokedAt = Date.now();
+    account.revokedBy = req.user._id;
+    account.revokedReason = revokedReason;
+    account.statusHistory.push({
+      status: 'revoked',
+      changedBy: req.user._id,
+      notes: revokedReason,
+    });
+
+    await account.save();
+
+    // Remove financeAccountId from organization if it matches
+    await Organization.findByIdAndUpdate(account.organizationId, {
+      financeAccountId: null,
+    });
+
+    // Log to audit trail
+    await log(req.user._id, 'revoke_finance_account', {
+      targetOrgId: account.organizationId,
+      details: {
+        financeAccountId: account._id,
+        businessName: account.businessName,
+        revokedReason,
+      },
+    });
+
+    // TODO: Send email notification to organization admin about revocation
+
+    res.json({
+      message: 'Finance account revoked successfully',
+      account: {
+        _id: account._id,
+        status: account.status,
+        revokedAt: account.revokedAt,
+      },
+    });
+  } catch (error) {
+    console.error('Error revoking finance account:', error);
+    res.status(500).json({ error: 'Failed to revoke finance account' });
+  }
 };
 
 // ─── Create Superadmin ────────────────────────────────────────────────────────

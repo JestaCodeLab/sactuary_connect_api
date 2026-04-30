@@ -105,6 +105,42 @@ export const sendPasswordResetEmail = async (email, firstName, resetToken) => {
 };
 
 /**
+ * Send team invitation email
+ */
+export const sendInviteEmail = async (email, inviterName, churchName, token) => {
+  try {
+    const inviteLink = `${process.env.CLIENT_URL}/accept-invite/${token}`;
+
+    if (!hasEmailConfig) {
+      console.warn('⚠️  EMAIL not configured. Invite link:', inviteLink);
+      return true;
+    }
+
+    const { subject, html, text } = emailTemplates.teamInvite(inviterName, churchName, inviteLink);
+
+    const result = await sendEmailWithRetry({
+      from: EMAIL_FROM,
+      to: [email],
+      subject,
+      html,
+      text,
+    }, 2);
+
+    if (!result.success) {
+      console.error('❌ Error sending invite email:', result.error?.message);
+      console.error('   Invite link (use this for testing):', inviteLink);
+      return false;
+    }
+
+    console.log('✓ Invite email sent to:', email);
+    return true;
+  } catch (error) {
+    console.error('❌ Unexpected error in sendInviteEmail:', error.message);
+    return false;
+  }
+};
+
+/**
  * Send welcome email
  */
 export const sendWelcomeEmail = async (email, churchName) => {

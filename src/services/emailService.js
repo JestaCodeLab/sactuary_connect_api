@@ -86,6 +86,49 @@ export const emailTemplates = {
     text: `Hi ${name},\n\nWe received a request to reset your Sanctuary Connect password.\n\nClick here to reset: ${resetLink}\n\nThis link expires in 1 hour.\n\nIf you didn't request this, please ignore this email.\n\n© 2024 Sanctuary Connect`,
   }),
 
+  teamInvite: (inviterName, churchName, inviteLink) => ({
+    subject: `You've been invited to manage ${churchName} on Sanctuary Connect`,
+    html: `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <style>
+            body { font-family: Arial, sans-serif; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #3B82F6 0%, #1E40AF 100%); color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
+            .content { background: #f9fafb; padding: 30px; border-radius: 0 0 8px 8px; }
+            .cta-button { background: #3B82F6; color: white; padding: 15px 30px; text-decoration: none; border-radius: 6px; display: inline-block; margin: 30px 0; font-weight: bold; }
+            .note { color: #6B7280; font-size: 13px; margin-top: 20px; }
+            .footer { text-align: center; color: #9CA3AF; font-size: 12px; margin-top: 30px; }
+            .warning { color: #DC2626; font-size: 12px; margin-top: 10px; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h1 style="margin: 0;">⛪ Sanctuary Connect</h1>
+              <p style="margin: 10px 0 0 0;">Team Invitation</p>
+            </div>
+            <div class="content">
+              <p>Hi there,</p>
+              <p><strong>${inviterName}</strong> has invited you to join <strong>${churchName}</strong> as an administrator on Sanctuary Connect.</p>
+              <p>As an admin, you'll be able to manage members, events, finances, and more for ${churchName}.</p>
+              <div style="text-align: center;">
+                <a href="${inviteLink}" class="cta-button">Accept Invitation</a>
+              </div>
+              <p class="note">This invitation will expire in <strong>48 hours</strong>. If you weren't expecting this invite, you can safely ignore this email.</p>
+            </div>
+            <div class="footer">
+              <p>© 2024 Sanctuary Connect. All rights reserved.</p>
+              <p class="warning">This is an automated message, please do not reply to this email.</p>
+            </div>
+          </div>
+        </body>
+      </html>
+    `,
+    text: `Hi there,\n\n${inviterName} has invited you to join ${churchName} as an administrator on Sanctuary Connect.\n\nAccept your invitation here: ${inviteLink}\n\nThis invitation expires in 48 hours.\n\nIf you weren't expecting this, you can ignore this email.\n\n© 2024 Sanctuary Connect`,
+  }),
+
   welcome: (churchName) => ({
     subject: 'Welcome to Sanctuary Connect - Getting Started',
     html: `

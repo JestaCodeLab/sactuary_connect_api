@@ -25,6 +25,11 @@ const organizationSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Subscription',
   },
+  // Finance account for merchant setup & payment processing
+  financeAccountId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'FinanceAccount',
+  },
   // Birthday SMS settings
   birthdayMessageTemplate: {
     type: String,

@@ -31,6 +31,7 @@ import settingsRoutes from './routes/settingsRoutes.js';
 import shepherdAlertRoutes from './routes/shepherdAlertRoutes.js';
 import notificationRoutes from './routes/notificationRoutes.js';
 import superadminRoutes from './routes/superadminRoutes.js';
+import invitationRoutes from './routes/invitationRoutes.js';
 
 dotenv.config();
 
@@ -72,6 +73,7 @@ app.use('/api/settings', settingsRoutes);
 app.use('/api/shepherd-alerts', shepherdAlertRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/superadmin', superadminRoutes);
+app.use('/api/invitations', invitationRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {

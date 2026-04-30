@@ -1,6 +1,8 @@
 import Donation from '../models/Donation.js';
 import Expense from '../models/Expense.js';
 import Transaction from '../models/Transaction.js';
+import FinanceAccount from '../models/FinanceAccount.js';
+import Organization from '../models/Organization.js';
 import { branchFilter, resolveCreateBranch } from '../utils/branchQuery.js';
 
 export const getFinanceOverview = async (req, res) => {
@@ -294,10 +296,217 @@ export const getTransactionById = async (req, res) => {
   }
 };
 
+// ===== FINANCE ACCOUNT SUBMISSION & STATUS =====
+
+export const submitFinanceAccount = async (req, res) => {
+  try {
+    const {
+      businessName,
+      businessType,
+      businessRegistration,
+      businessAddress,
+      taxId,
+      ownerFullName,
+      ownerEmail,
+      ownerPhone,
+      ownerIdType,
+      ownerIdNumber,
+      bankCode,
+      bankAccountName,
+      bankAccountNumber,
+      accountType,
+    } = req.body;
+
+    // Validate required fields
+    const requiredFields = [
+      'businessName',
+      'businessType',
+      'businessRegistration',
+      'businessAddress',
+      'taxId',
+      'ownerFullName',
+      'ownerEmail',
+      'ownerPhone',
+      'ownerIdType',
+      'ownerIdNumber',
+      'bankCode',
+      'bankAccountName',
+      'bankAccountNumber',
+      'accountType',
+    ];
+
+    for (const field of requiredFields) {
+      if (!req.body[field]) {
+        return res.status(400).json({ error: `${field} is required` });
+      }
+    }
+
+    // Validate document URLs (assuming they're in the request body from frontend after S3 upload)
+    if (!req.body.businessRegistrationDoc || !req.body.taxIdDoc || !req.body.ownerIdDoc) {
+      return res.status(400).json({ error: 'All required documents must be uploaded' });
+    }
+
+    const organizationId = req.org._id;
+
+    // Check if finance account already exists for this organization
+    let financeAccount = await FinanceAccount.findOne({ organizationId });
+
+    if (financeAccount) {
+      // Only allow update if status is rejected or revoked
+      if (!['rejected', 'revoked'].includes(financeAccount.status)) {
+        return res.status(400).json({
+          error: `Cannot resubmit. Current status: ${financeAccount.status}`,
+        });
+      }
+      // Update existing document
+      financeAccount.businessName = businessName;
+      financeAccount.businessType = businessType;
+      financeAccount.businessRegistration = businessRegistration;
+      financeAccount.businessRegistrationDoc = req.body.businessRegistrationDoc;
+      financeAccount.businessAddress = businessAddress;
+      financeAccount.taxId = taxId;
+      financeAccount.taxIdDoc = req.body.taxIdDoc;
+      financeAccount.ownerFullName = ownerFullName;
+      financeAccount.ownerEmail = ownerEmail;
+      financeAccount.ownerPhone = ownerPhone;
+      financeAccount.ownerIdType = ownerIdType;
+      financeAccount.ownerIdNumber = ownerIdNumber;
+      financeAccount.ownerIdDoc = req.body.ownerIdDoc;
+      financeAccount.bankCode = bankCode;
+      financeAccount.bankAccountName = bankAccountName;
+      financeAccount.bankAccountNumber = bankAccountNumber;
+      financeAccount.accountType = accountType;
+      financeAccount.status = 'pending';
+      financeAccount.submittedAt = Date.now();
+      financeAccount.submittedBy = req.user._id;
+      financeAccount.statusHistory.push({
+        status: 'pending',
+        changedBy: req.user._id,
+        notes: 'Resubmitted after rejection',
+      });
+    } else {
+      // Create new finance account
+      financeAccount = new FinanceAccount({
+        organizationId,
+        businessName,
+        businessType,
+        businessRegistration,
+        businessRegistrationDoc: req.body.businessRegistrationDoc,
+        businessAddress,
+        taxId,
+        taxIdDoc: req.body.taxIdDoc,
+        ownerFullName,
+        ownerEmail,
+        ownerPhone,
+        ownerIdType,
+        ownerIdNumber,
+        ownerIdDoc: req.body.ownerIdDoc,
+        bankCode,
+        bankAccountName,
+        bankAccountNumber,
+        accountType,
+        submittedBy: req.user._id,
+        statusHistory: [
+          {
+            status: 'pending',
+            changedBy: req.user._id,
+            notes: 'Initial submission',
+          },
+        ],
+      });
+    }
+
+    await financeAccount.save();
+
+    // Update organization's financeAccountId if not already set
+    if (!req.org.financeAccountId) {
+      req.org.financeAccountId = financeAccount._id;
+      await req.org.save();
+    }
+
+    // Log to audit log if available
+    if (req.auditLog) {
+      await req.auditLog.create({
+        actor: req.user._id,
+        action: 'finance_account_submitted',
+        targetType: 'FinanceAccount',
+        targetId: financeAccount._id,
+        organizationId,
+        details: { status: 'pending' },
+      });
+    }
+
+    res.status(201).json({
+      message: 'Finance account submitted successfully. Awaiting superadmin approval.',
+      financeAccount: {
+        _id: financeAccount._id,
+        status: financeAccount.status,
+        submittedAt: financeAccount.submittedAt,
+        businessName: financeAccount.businessName,
+      },
+    });
+  } catch (error) {
+    console.error('Error submitting finance account:', error);
+    res.status(500).json({ error: 'Failed to submit finance account' });
+  }
+};
+
+export const getFinanceAccountStatus = async (req, res) => {
+  try {
+    const organizationId = req.org._id;
+
+    const financeAccount = await FinanceAccount.findOne({ organizationId })
+      .select('-businessRegistrationDoc -taxIdDoc -ownerIdDoc') // Don't return document URLs in status check
+      .populate('submittedBy', 'firstName lastName email')
+      .populate('approvedBy', 'firstName lastName email')
+      .populate('revokedBy', 'firstName lastName email')
+      .lean();
+
+    if (!financeAccount) {
+      return res.json({
+        status: 'not_started',
+        message: 'No finance account setup found. Please submit your merchant details to proceed.',
+      });
+    }
+
+    // Return appropriate response based on status
+    const response = {
+      _id: financeAccount._id,
+      status: financeAccount.status,
+      submittedAt: financeAccount.submittedAt,
+      businessName: financeAccount.businessName,
+      ownerFullName: financeAccount.ownerFullName,
+    };
+
+    if (financeAccount.status === 'pending') {
+      response.message = 'Your submission is pending superadmin approval.';
+    } else if (financeAccount.status === 'approved') {
+      response.message = 'Your finance account is approved. You now have access to the finance module.';
+      response.approvedAt = financeAccount.approvedAt;
+      response.approvedBy = financeAccount.approvedBy;
+    } else if (financeAccount.status === 'rejected') {
+      response.message = `Your submission was rejected. Reason: ${financeAccount.rejectionReason}`;
+      response.rejectionReason = financeAccount.rejectionReason;
+      response.rejectionDetails = financeAccount.rejectionDetails;
+    } else if (financeAccount.status === 'revoked') {
+      response.message = `Your finance account has been revoked. Reason: ${financeAccount.revokedReason}`;
+      response.revokedReason = financeAccount.revokedReason;
+      response.revokedAt = financeAccount.revokedAt;
+    }
+
+    res.json(response);
+  } catch (error) {
+    console.error('Error fetching finance account status:', error);
+    res.status(500).json({ error: 'Failed to fetch finance account status' });
+  }
+};
+
 export default {
   getFinanceOverview,
   getFinanceReport,
   getTransactions,
   getTransactionSummary,
   getTransactionById,
+  submitFinanceAccount,
+  getFinanceAccountStatus,
 };
