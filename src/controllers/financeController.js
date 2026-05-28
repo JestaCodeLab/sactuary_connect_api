@@ -346,7 +346,7 @@ export const submitFinanceAccount = async (req, res) => {
       return res.status(400).json({ error: 'All required documents must be uploaded' });
     }
 
-    const organizationId = req.org._id;
+    const organizationId = req.organizationId;
 
     // Check if finance account already exists for this organization
     let financeAccount = await FinanceAccount.findOne({ organizationId });
@@ -419,10 +419,10 @@ export const submitFinanceAccount = async (req, res) => {
     await financeAccount.save();
 
     // Update organization's financeAccountId if not already set
-    if (!req.org.financeAccountId) {
-      req.org.financeAccountId = financeAccount._id;
-      await req.org.save();
-    }
+    await Organization.updateOne(
+      { _id: organizationId, financeAccountId: { $exists: false } },
+      { $set: { financeAccountId: financeAccount._id } }
+    );
 
     // Log to audit log if available
     if (req.auditLog) {
@@ -453,7 +453,7 @@ export const submitFinanceAccount = async (req, res) => {
 
 export const getFinanceAccountStatus = async (req, res) => {
   try {
-    const organizationId = req.org._id;
+    const organizationId = req.organizationId;
 
     const financeAccount = await FinanceAccount.findOne({ organizationId })
       .select('-businessRegistrationDoc -taxIdDoc -ownerIdDoc') // Don't return document URLs in status check

@@ -39,6 +39,7 @@ import {
   approveFinanceAccount,
   rejectFinanceAccount,
   revokeFinanceAccount,
+  getOrgFinanceAccount,
 } from '../controllers/superadminController.js';
 
 const router = Router();
@@ -53,6 +54,7 @@ router.get('/stats', getStats);
 router.get('/organizations', listOrganizations);
 router.post('/organizations', createOrganization);
 router.get('/organizations/:id', getOrganization);
+router.get('/organizations/:id/finance-account', getOrgFinanceAccount);
 router.patch('/organizations/:id', updateOrganization);
 router.patch('/organizations/:id/status', updateOrgStatus);
 router.delete('/organizations/:id', deleteOrganization);

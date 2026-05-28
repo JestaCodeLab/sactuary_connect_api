@@ -11,6 +11,7 @@ import Department from '../models/Department.js';
 import Event from '../models/Event.js';
 import AuditLog from '../models/AuditLog.js';
 import FinanceAccount from '../models/FinanceAccount.js';
+import { processFinanceAccountApproval } from '../jobs/financeApprovalJob.js';
 import { PLANS } from '../config/plans.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -1038,6 +1039,13 @@ export const approveFinanceAccount = async (req, res) => {
       financeAccountId: account._id,
     });
 
+    // Fire async Paystack subaccount creation (non-blocking)
+    setImmediate(() =>
+      processFinanceAccountApproval(account._id, req.user._id).catch((err) =>
+        console.error('[approveFinanceAccount] Paystack job error:', err)
+      )
+    );
+
     // Log to audit trail
     await log(req.user._id, 'approve_finance_account', {
       targetOrgId: account.organizationId,
@@ -1181,6 +1189,22 @@ export const revokeFinanceAccount = async (req, res) => {
   } catch (error) {
     console.error('Error revoking finance account:', error);
     res.status(500).json({ error: 'Failed to revoke finance account' });
+  }
+};
+
+export const getOrgFinanceAccount = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const account = await FinanceAccount.findOne({ organizationId: id })
+      .populate('submittedBy', 'firstName lastName email')
+      .populate('approvedBy', 'firstName lastName')
+      .populate('statusHistory.changedBy', 'firstName lastName');
+
+    if (!account) return res.json({ status: 'not_started' });
+    res.json(account);
+  } catch (error) {
+    console.error('Error fetching org finance account:', error);
+    res.status(500).json({ error: 'Failed to fetch finance account' });
   }
 };
 
