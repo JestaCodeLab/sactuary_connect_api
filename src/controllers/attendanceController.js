@@ -522,24 +522,7 @@ export const exportEventAttendance = async (req, res) => {
       };
     });
 
-    // Ensure exports directory exists
-    try {
-      if (!fs.existsSync(EXPORTS_DIR)) {
-        fs.mkdirSync(EXPORTS_DIR, { recursive: true });
-      }
-      // Test write permission
-      fs.accessSync(EXPORTS_DIR, fs.constants.W_OK);
-    } catch (dirError) {
-      console.error('Exports directory error:', dirError);
-      return res.status(500).json({ error: 'Export directory not writable. Contact support.' });
-    }
-
-    const fileId = uuidv4();
-    const baseUrl = process.env.API_URL || `${req.protocol}://${req.get('host')}`;
-
-    if (!process.env.API_URL) {
-      console.warn('API_URL not set, using request URL:', baseUrl);
-    }
+    const fileName = `attendance-${eventId}-${new Date().toISOString().split('T')[0]}.${format}`;
 
     if (format === 'csv') {
       const csvHeaders = ['Name', 'Type', 'Check-In Method', 'Check-In Time', 'Contact'].join(',');
@@ -550,97 +533,78 @@ export const exportEventAttendance = async (req, res) => {
       );
 
       const csv = [csvHeaders, ...csvRows].join('\n');
-      const fileName = `attendance-${eventId}-${fileId}.csv`;
-      const filePath = path.join(EXPORTS_DIR, fileName);
-      fs.writeFileSync(filePath, csv);
 
-      return res.json({ downloadUrl: `${baseUrl}/exports/${fileName}` });
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+      return res.send(csv);
     }
 
-    // PDF generation
-    const fileName = `attendance-${eventId}-${fileId}.pdf`;
-    const filePath = path.join(EXPORTS_DIR, fileName);
+    // PDF generation - stream directly to response
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
 
-    await new Promise((resolve, reject) => {
-      try {
-        const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margin: 30 });
-        const writeStream = fs.createWriteStream(filePath);
+    const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margin: 30 });
+    doc.pipe(res);
 
-        doc.on('error', (err) => {
-          writeStream.destroy();
-          reject(err);
-        });
+    // Title
+    doc.fontSize(18).font('Helvetica-Bold').text('Attendance Report', { align: 'center' });
+    doc.fontSize(12).font('Helvetica').text(event.title, { align: 'center' });
+    doc.fontSize(10).text(
+      `${new Date(event.startDate).toLocaleDateString()} — ${new Date(event.endDate).toLocaleDateString()}`,
+      { align: 'center' }
+    );
+    doc.moveDown(0.5);
 
-        writeStream.on('error', reject);
+    // Summary stats
+    doc.fontSize(10).font('Helvetica-Bold').text('Summary');
+    doc.font('Helvetica').fontSize(9);
+    doc.text(`Total Check-Ins: ${stats.total}    Members: ${stats.members}    Guests: ${stats.guests}    QR: ${stats.qrCheckIns}    Manual: ${stats.manualCheckIns}`);
+    doc.moveDown(1);
 
-        doc.pipe(writeStream);
+    // Table
+    const headers = ['Name', 'Type', 'Method', 'Check-In Time', 'Contact'];
+    const colWidths = [180, 70, 80, 170, 180];
+    const tableLeft = 30;
+    const rowHeight = 20;
 
-        // Title
-        doc.fontSize(18).font('Helvetica-Bold').text('Attendance Report', { align: 'center' });
-        doc.fontSize(12).font('Helvetica').text(event.title, { align: 'center' });
-        doc.fontSize(10).text(
-          `${new Date(event.startDate).toLocaleDateString()} — ${new Date(event.endDate).toLocaleDateString()}`,
-          { align: 'center' }
-        );
-        doc.moveDown(0.5);
+    let y = doc.y;
 
-        // Summary stats
-        doc.fontSize(10).font('Helvetica-Bold').text('Summary');
-        doc.font('Helvetica').fontSize(9);
-        doc.text(`Total Check-Ins: ${stats.total}    Members: ${stats.members}    Guests: ${stats.guests}    QR: ${stats.qrCheckIns}    Manual: ${stats.manualCheckIns}`);
-        doc.moveDown(1);
+    const drawHeaderRow = () => {
+      doc.fontSize(9).font('Helvetica-Bold');
+      doc.rect(tableLeft, y, colWidths.reduce((a, b) => a + b, 0), rowHeight).fill('#f4f4f4').stroke('#dddddd');
+      doc.fillColor('#000000');
+      let x = tableLeft + 5;
+      headers.forEach((header, i) => {
+        doc.text(header, x, y + 5, { width: colWidths[i] - 10, lineBreak: false });
+        x += colWidths[i];
+      });
+      y += rowHeight;
+      doc.font('Helvetica').fontSize(8);
+    };
 
-        // Table
-        const headers = ['Name', 'Type', 'Method', 'Check-In Time', 'Contact'];
-        const colWidths = [180, 70, 80, 170, 180];
-        const tableLeft = 30;
-        const rowHeight = 20;
+    drawHeaderRow();
 
-        let y = doc.y;
-
-        const drawHeaderRow = () => {
-          doc.fontSize(9).font('Helvetica-Bold');
-          doc.rect(tableLeft, y, colWidths.reduce((a, b) => a + b, 0), rowHeight).fill('#f4f4f4').stroke('#dddddd');
-          doc.fillColor('#000000');
-          let x = tableLeft + 5;
-          headers.forEach((header, i) => {
-            doc.text(header, x, y + 5, { width: colWidths[i] - 10, lineBreak: false });
-            x += colWidths[i];
-          });
-          y += rowHeight;
-          doc.font('Helvetica').fontSize(8);
-        };
-
+    resolvedRecords.forEach((r, rowIndex) => {
+      if (y + rowHeight > doc.page.height - 30) {
+        doc.addPage({ size: 'A4', layout: 'landscape', margin: 30 });
+        y = 30;
         drawHeaderRow();
-
-        resolvedRecords.forEach((r, rowIndex) => {
-          if (y + rowHeight > doc.page.height - 30) {
-            doc.addPage({ size: 'A4', layout: 'landscape', margin: 30 });
-            y = 30;
-            drawHeaderRow();
-          }
-
-          const bgColor = rowIndex % 2 === 0 ? '#f9f9f9' : '#ffffff';
-          doc.rect(tableLeft, y, colWidths.reduce((a, b) => a + b, 0), rowHeight).fill(bgColor).stroke('#dddddd');
-          doc.fillColor('#000000');
-
-          const rowData = [r.name, r.type, r.method, r.checkInTime, r.contact];
-          let x = tableLeft + 5;
-          rowData.forEach((cell, i) => {
-            doc.text(cell, x, y + 5, { width: colWidths[i] - 10, lineBreak: false });
-            x += colWidths[i];
-          });
-          y += rowHeight;
-        });
-
-        doc.end();
-        writeStream.on('finish', resolve);
-      } catch (err) {
-        reject(err);
       }
+
+      const bgColor = rowIndex % 2 === 0 ? '#f9f9f9' : '#ffffff';
+      doc.rect(tableLeft, y, colWidths.reduce((a, b) => a + b, 0), rowHeight).fill(bgColor).stroke('#dddddd');
+      doc.fillColor('#000000');
+
+      const rowData = [r.name, r.type, r.method, r.checkInTime, r.contact];
+      let x = tableLeft + 5;
+      rowData.forEach((cell, i) => {
+        doc.text(cell, x, y + 5, { width: colWidths[i] - 10, lineBreak: false });
+        x += colWidths[i];
+      });
+      y += rowHeight;
     });
 
-    res.json({ downloadUrl: `${baseUrl}/exports/${fileName}` });
+    doc.end();
   } catch (error) {
     console.error('Error exporting event attendance:', {
       message: error.message,

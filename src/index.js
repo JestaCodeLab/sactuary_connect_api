@@ -52,19 +52,6 @@ app.use(cors({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Apply CORS to exports route as well
-const corsOptions = {
-  origin: [
-    'http://localhost:3000',
-    'https://app.sanctuaryconnect.org',
-    process.env.CLIENT_URL,
-  ].filter(Boolean),
-  credentials: true,
-};
-
-// Serve export files statically with CORS
-app.use('/exports', cors(corsOptions), express.static(path.join(__dirname, '../exports')));
-
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/members', memberRoutes);
