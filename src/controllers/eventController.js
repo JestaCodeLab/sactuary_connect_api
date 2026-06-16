@@ -463,7 +463,7 @@ export const getEventByToken = async (req, res) => {
     const now = new Date();
 
     const event = await Event.findOne({ 'qrCode.token': token })
-      .select('title description startDate endDate location eventType qrCode organizationId branchId status isRecurring recurrenceEndDate');
+      .select('title description startDate endDate location eventType qrCode organizationId branchId status isRecurring recurrenceEndDate usesServiceCodes');
 
     if (!event) {
       return res.status(404).json({ error: 'Invalid or expired check-in token' });
@@ -477,11 +477,15 @@ export const getEventByToken = async (req, res) => {
     // For recurring events, compute occurrence-specific dates
     let responseStartDate = event.startDate;
     let responseEndDate = event.endDate;
+    let occurrenceDate = event.qrCode.occurrenceDate || null;
 
     if (event.isRecurring && event.qrCode.occurrenceDate) {
       const duration = new Date(event.endDate).getTime() - new Date(event.startDate).getTime();
       responseStartDate = event.qrCode.occurrenceDate;
       responseEndDate = new Date(new Date(event.qrCode.occurrenceDate).getTime() + duration);
+    } else if (event.isRecurring) {
+      // If no occurrence date set, use current/next occurrence
+      occurrenceDate = new Date();
     }
 
     res.json({
@@ -494,7 +498,8 @@ export const getEventByToken = async (req, res) => {
       eventType: event.eventType,
       status: event.status,
       isRecurring: event.isRecurring || false,
-      occurrenceDate: event.qrCode.occurrenceDate || null,
+      usesServiceCodes: (event.isRecurring && event.usesServiceCodes) || false,
+      occurrenceDate,
       token,
     });
   } catch (error) {
