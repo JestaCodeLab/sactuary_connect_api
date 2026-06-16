@@ -523,12 +523,23 @@ export const exportEventAttendance = async (req, res) => {
     });
 
     // Ensure exports directory exists
-    if (!fs.existsSync(EXPORTS_DIR)) {
-      fs.mkdirSync(EXPORTS_DIR, { recursive: true });
+    try {
+      if (!fs.existsSync(EXPORTS_DIR)) {
+        fs.mkdirSync(EXPORTS_DIR, { recursive: true });
+      }
+      // Test write permission
+      fs.accessSync(EXPORTS_DIR, fs.constants.W_OK);
+    } catch (dirError) {
+      console.error('Exports directory error:', dirError);
+      return res.status(500).json({ error: 'Export directory not writable. Contact support.' });
     }
 
     const fileId = uuidv4();
     const baseUrl = process.env.API_URL || `${req.protocol}://${req.get('host')}`;
+
+    if (!process.env.API_URL) {
+      console.warn('API_URL not set, using request URL:', baseUrl);
+    }
 
     if (format === 'csv') {
       const csvHeaders = ['Name', 'Type', 'Check-In Method', 'Check-In Time', 'Contact'].join(',');
@@ -551,77 +562,95 @@ export const exportEventAttendance = async (req, res) => {
     const filePath = path.join(EXPORTS_DIR, fileName);
 
     await new Promise((resolve, reject) => {
-      const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margin: 30 });
-      const writeStream = fs.createWriteStream(filePath);
-      doc.pipe(writeStream);
+      try {
+        const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margin: 30 });
+        const writeStream = fs.createWriteStream(filePath);
 
-      // Title
-      doc.fontSize(18).font('Helvetica-Bold').text('Attendance Report', { align: 'center' });
-      doc.fontSize(12).font('Helvetica').text(event.title, { align: 'center' });
-      doc.fontSize(10).text(
-        `${new Date(event.startDate).toLocaleDateString()} — ${new Date(event.endDate).toLocaleDateString()}`,
-        { align: 'center' }
-      );
-      doc.moveDown(0.5);
-
-      // Summary stats
-      doc.fontSize(10).font('Helvetica-Bold').text('Summary');
-      doc.font('Helvetica').fontSize(9);
-      doc.text(`Total Check-Ins: ${stats.total}    Members: ${stats.members}    Guests: ${stats.guests}    QR: ${stats.qrCheckIns}    Manual: ${stats.manualCheckIns}`);
-      doc.moveDown(1);
-
-      // Table
-      const headers = ['Name', 'Type', 'Method', 'Check-In Time', 'Contact'];
-      const colWidths = [180, 70, 80, 170, 180];
-      const tableLeft = 30;
-      const rowHeight = 20;
-
-      let y = doc.y;
-
-      const drawHeaderRow = () => {
-        doc.fontSize(9).font('Helvetica-Bold');
-        doc.rect(tableLeft, y, colWidths.reduce((a, b) => a + b, 0), rowHeight).fill('#f4f4f4').stroke('#dddddd');
-        doc.fillColor('#000000');
-        let x = tableLeft + 5;
-        headers.forEach((header, i) => {
-          doc.text(header, x, y + 5, { width: colWidths[i] - 10, lineBreak: false });
-          x += colWidths[i];
+        doc.on('error', (err) => {
+          writeStream.destroy();
+          reject(err);
         });
-        y += rowHeight;
-        doc.font('Helvetica').fontSize(8);
-      };
 
-      drawHeaderRow();
+        writeStream.on('error', reject);
 
-      resolvedRecords.forEach((r, rowIndex) => {
-        if (y + rowHeight > doc.page.height - 30) {
-          doc.addPage({ size: 'A4', layout: 'landscape', margin: 30 });
-          y = 30;
-          drawHeaderRow();
-        }
+        doc.pipe(writeStream);
 
-        const bgColor = rowIndex % 2 === 0 ? '#f9f9f9' : '#ffffff';
-        doc.rect(tableLeft, y, colWidths.reduce((a, b) => a + b, 0), rowHeight).fill(bgColor).stroke('#dddddd');
-        doc.fillColor('#000000');
+        // Title
+        doc.fontSize(18).font('Helvetica-Bold').text('Attendance Report', { align: 'center' });
+        doc.fontSize(12).font('Helvetica').text(event.title, { align: 'center' });
+        doc.fontSize(10).text(
+          `${new Date(event.startDate).toLocaleDateString()} — ${new Date(event.endDate).toLocaleDateString()}`,
+          { align: 'center' }
+        );
+        doc.moveDown(0.5);
 
-        const rowData = [r.name, r.type, r.method, r.checkInTime, r.contact];
-        let x = tableLeft + 5;
-        rowData.forEach((cell, i) => {
-          doc.text(cell, x, y + 5, { width: colWidths[i] - 10, lineBreak: false });
-          x += colWidths[i];
+        // Summary stats
+        doc.fontSize(10).font('Helvetica-Bold').text('Summary');
+        doc.font('Helvetica').fontSize(9);
+        doc.text(`Total Check-Ins: ${stats.total}    Members: ${stats.members}    Guests: ${stats.guests}    QR: ${stats.qrCheckIns}    Manual: ${stats.manualCheckIns}`);
+        doc.moveDown(1);
+
+        // Table
+        const headers = ['Name', 'Type', 'Method', 'Check-In Time', 'Contact'];
+        const colWidths = [180, 70, 80, 170, 180];
+        const tableLeft = 30;
+        const rowHeight = 20;
+
+        let y = doc.y;
+
+        const drawHeaderRow = () => {
+          doc.fontSize(9).font('Helvetica-Bold');
+          doc.rect(tableLeft, y, colWidths.reduce((a, b) => a + b, 0), rowHeight).fill('#f4f4f4').stroke('#dddddd');
+          doc.fillColor('#000000');
+          let x = tableLeft + 5;
+          headers.forEach((header, i) => {
+            doc.text(header, x, y + 5, { width: colWidths[i] - 10, lineBreak: false });
+            x += colWidths[i];
+          });
+          y += rowHeight;
+          doc.font('Helvetica').fontSize(8);
+        };
+
+        drawHeaderRow();
+
+        resolvedRecords.forEach((r, rowIndex) => {
+          if (y + rowHeight > doc.page.height - 30) {
+            doc.addPage({ size: 'A4', layout: 'landscape', margin: 30 });
+            y = 30;
+            drawHeaderRow();
+          }
+
+          const bgColor = rowIndex % 2 === 0 ? '#f9f9f9' : '#ffffff';
+          doc.rect(tableLeft, y, colWidths.reduce((a, b) => a + b, 0), rowHeight).fill(bgColor).stroke('#dddddd');
+          doc.fillColor('#000000');
+
+          const rowData = [r.name, r.type, r.method, r.checkInTime, r.contact];
+          let x = tableLeft + 5;
+          rowData.forEach((cell, i) => {
+            doc.text(cell, x, y + 5, { width: colWidths[i] - 10, lineBreak: false });
+            x += colWidths[i];
+          });
+          y += rowHeight;
         });
-        y += rowHeight;
-      });
 
-      doc.end();
-      writeStream.on('finish', resolve);
-      writeStream.on('error', reject);
+        doc.end();
+        writeStream.on('finish', resolve);
+      } catch (err) {
+        reject(err);
+      }
     });
 
     res.json({ downloadUrl: `${baseUrl}/exports/${fileName}` });
   } catch (error) {
-    console.error('Error exporting event attendance:', error);
-    res.status(500).json({ error: 'Failed to export attendance report' });
+    console.error('Error exporting event attendance:', {
+      message: error.message,
+      stack: error.stack,
+      code: error.code,
+    });
+    res.status(500).json({
+      error: 'Failed to export attendance report',
+      details: error.message
+    });
   }
 };
 
