@@ -9,6 +9,7 @@ import connectDB from './config/database.js';
 import { cleanupExports } from './utils/exportCleanup.js';
 import { startRecurringQRJob } from './jobs/recurringQRJob.js';
 import { initBirthdayJob } from './jobs/birthdayJob.js';
+import { initServiceCodeGenerationJob } from './jobs/serviceCodeGenerationJob.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -96,6 +97,9 @@ const startServer = async () => {
 
     // Start birthday SMS automation job (9:00 AM daily)
     initBirthdayJob();
+
+    // Start service code generation job (for recurring event occurrences)
+    initServiceCodeGenerationJob();
 
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);

@@ -5,9 +5,11 @@ import Event from '../models/Event.js';
 import AttendanceRecord from '../models/AttendanceRecord.js';
 import Message from '../models/Message.js';
 import Member from '../models/Member.js';
+import ServiceCode from '../models/ServiceCode.js';
 import { branchFilter, resolveCreateBranch } from '../utils/branchQuery.js';
 import { computeOccurrences, getNextOccurrence, getCurrentOccurrence } from '../utils/occurrenceHelper.js';
 import { checkEventLimit } from '../utils/usageLimits.js';
+import { serviceCodeService } from '../services/serviceCodeService.js';
 
 export const getAllEvents = async (req, res) => {
   try {
@@ -156,6 +158,7 @@ export const createEvent = async (req, res) => {
       recurrencePattern,
       recurrenceDay,
       recurrenceEndDate,
+      usesServiceCodes: isRecurring || false, // Service codes enabled for recurring events
     });
 
     await event.save();
@@ -365,20 +368,21 @@ export const generateQRCode = async (req, res) => {
       return res.status(404).json({ error: 'Event not found' });
     }
 
-    const token = uuidv4();
-    let expiresAt;
+    let token = event.qrCode?.token;
+    let expiresAt = null;
     let occurrenceDate = null;
 
+    // For recurring events: generate ONE QR token and keep it forever
     if (event.isRecurring) {
-      // For recurring events, generate QR for the current or next occurrence
-      const occurrence = getCurrentOccurrence(event) || getNextOccurrence(event);
-      if (!occurrence) {
-        return res.status(400).json({ error: 'No upcoming occurrences for this recurring event' });
+      if (!token) {
+        // Generate token only once for recurring events
+        token = uuidv4();
+        event.usesServiceCodes = true;
       }
-      expiresAt = new Date(occurrence.endDate);
-      expiresAt.setHours(expiresAt.getHours() + 2);
-      occurrenceDate = occurrence.startDate;
+      // No expiration for recurring event QR codes
     } else {
+      // For non-recurring events: generate/refresh token with expiration
+      token = uuidv4();
       expiresAt = new Date(event.endDate);
       expiresAt.setHours(expiresAt.getHours() + 2);
     }
@@ -391,7 +395,13 @@ export const generateQRCode = async (req, res) => {
       margin: 2,
     });
 
-    event.qrCode = { token, dataUrl, expiresAt, occurrenceDate };
+    event.qrCode = {
+      token,
+      dataUrl,
+      expiresAt,
+      occurrenceDate,
+      generatedAt: new Date(),
+    };
     event.updatedAt = new Date();
     await event.save();
 
@@ -401,6 +411,7 @@ export const generateQRCode = async (req, res) => {
       expiresAt,
       checkInUrl,
       occurrenceDate,
+      usesServiceCodes: event.usesServiceCodes || false,
     });
   } catch (error) {
     console.error('Error generating QR code:', error);
@@ -417,45 +428,17 @@ export const getQRCode = async (req, res) => {
       return res.status(404).json({ error: 'Event not found' });
     }
 
-    const now = new Date();
-    const hasValidQR = event.qrCode?.token && event.qrCode?.expiresAt && new Date(event.qrCode.expiresAt) > now;
-
-    // For recurring events, auto-refresh if QR is expired or missing
-    if (event.isRecurring && !hasValidQR) {
-      const occurrence = getCurrentOccurrence(event) || getNextOccurrence(event);
-      if (!occurrence) {
-        return res.status(400).json({ error: 'No upcoming occurrences for this recurring event' });
-      }
-
-      const token = uuidv4();
-      const expiresAt = new Date(occurrence.endDate);
-      expiresAt.setHours(expiresAt.getHours() + 2);
-      const checkInUrl = `${process.env.CLIENT_URL || 'https://app.sanctuaryconnect.org'}/check-in/${token}`;
-
-      const dataUrl = await QRCode.toDataURL(checkInUrl, {
-        errorCorrectionLevel: 'M',
-        width: 400,
-        margin: 2,
-      });
-
-      event.qrCode = { token, dataUrl, expiresAt, occurrenceDate: occurrence.startDate };
-      event.updatedAt = now;
-      await event.save();
-
-      return res.json({
-        token,
-        dataUrl,
-        expiresAt,
-        checkInUrl,
-        occurrenceDate: occurrence.startDate,
-      });
+    if (!event.qrCode?.token) {
+      return res.status(404).json({ error: 'QR code not generated for this event' });
     }
 
-    if (!hasValidQR) {
-      if (!event.qrCode?.token) {
-        return res.status(404).json({ error: 'QR code not generated for this event' });
+    const now = new Date();
+
+    // For non-recurring events, check expiration
+    if (!event.isRecurring && event.qrCode.expiresAt) {
+      if (new Date(event.qrCode.expiresAt) < now) {
+        return res.status(410).json({ error: 'QR code has expired' });
       }
-      return res.status(410).json({ error: 'QR code has expired' });
     }
 
     const checkInUrl = `${process.env.CLIENT_URL || 'https://app.sanctuaryconnect.org'}/check-in/${event.qrCode.token}`;
@@ -463,9 +446,10 @@ export const getQRCode = async (req, res) => {
     res.json({
       token: event.qrCode.token,
       dataUrl: event.qrCode.dataUrl,
-      expiresAt: event.qrCode.expiresAt,
+      expiresAt: event.qrCode.expiresAt || null,
       checkInUrl,
       occurrenceDate: event.qrCode.occurrenceDate || null,
+      usesServiceCodes: event.usesServiceCodes || false,
     });
   } catch (error) {
     console.error('Error fetching QR code:', error);
@@ -519,6 +503,111 @@ export const getEventByToken = async (req, res) => {
   }
 };
 
+export const getServiceCode = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { occurrenceDate } = req.query;
+
+    const event = await Event.findById(id);
+    if (!event) {
+      return res.status(404).json({ error: 'Event not found' });
+    }
+
+    if (!event.isRecurring) {
+      return res.status(400).json({ error: 'Service codes are only available for recurring events' });
+    }
+
+    // Auto-enable service codes for recurring events
+    if (!event.usesServiceCodes) {
+      event.usesServiceCodes = true;
+      await event.save();
+    }
+
+    // Determine which occurrence to fetch service code for
+    let targetOccurrence;
+    if (occurrenceDate) {
+      // If specific date provided, use it
+      targetOccurrence = { startDate: new Date(occurrenceDate) };
+    } else {
+      // Get current or next occurrence
+      targetOccurrence = getCurrentOccurrence(event) || getNextOccurrence(event);
+      if (!targetOccurrence) {
+        return res.status(404).json({ error: 'No current or upcoming occurrences for this event' });
+      }
+    }
+
+    const serviceCode = await serviceCodeService.getCodeForOccurrence(
+      event._id,
+      targetOccurrence.startDate
+    );
+
+    if (!serviceCode) {
+      return res.status(404).json({ error: 'Service code not yet generated for this occurrence' });
+    }
+
+    res.json({
+      code: serviceCode.code,
+      occurrenceDate: serviceCode.occurrenceDate,
+      expiresAt: serviceCode.expiresAt,
+      usageCount: serviceCode.usageCount,
+    });
+  } catch (error) {
+    console.error('Error fetching service code:', error);
+    res.status(500).json({ error: 'Failed to fetch service code' });
+  }
+};
+
+export const regenerateServiceCode = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { occurrenceDate } = req.body;
+
+    const event = await Event.findById(id);
+    if (!event) {
+      return res.status(404).json({ error: 'Event not found' });
+    }
+
+    if (!event.isRecurring) {
+      return res.status(400).json({ error: 'Service codes are only available for recurring events' });
+    }
+
+    // Auto-enable service codes for recurring events
+    if (!event.usesServiceCodes) {
+      event.usesServiceCodes = true;
+      await event.save();
+    }
+
+    // If no occurrenceDate provided, use current or next occurrence
+    let targetOccurrenceDate = occurrenceDate;
+    if (!targetOccurrenceDate) {
+      const occurrence = getCurrentOccurrence(event) || getNextOccurrence(event);
+      if (!occurrence) {
+        return res.status(400).json({ error: 'No upcoming occurrences for this event' });
+      }
+      targetOccurrenceDate = occurrence.startDate;
+    }
+
+    // Generate new service code (overwrites existing if present)
+    const serviceCode = await serviceCodeService.generateCodeForOccurrence(
+      event._id,
+      targetOccurrenceDate,
+      event.organizationId,
+      event.branchId,
+      { startDate: event.startDate, endDate: event.endDate }
+    );
+
+    res.json({
+      code: serviceCode.code,
+      occurrenceDate: serviceCode.occurrenceDate,
+      expiresAt: serviceCode.expiresAt,
+      usageCount: serviceCode.usageCount,
+    });
+  } catch (error) {
+    console.error('Error regenerating service code:', error);
+    res.status(500).json({ error: 'Failed to regenerate service code' });
+  }
+};
+
 export default {
   getAllEvents,
   getEventById,
@@ -533,4 +622,6 @@ export default {
   generateQRCode,
   getQRCode,
   getEventByToken,
+  getServiceCode,
+  regenerateServiceCode,
 };

@@ -65,7 +65,13 @@ const eventSchema = new mongoose.Schema({
     },
     dataUrl: String,
     expiresAt: Date,
-    occurrenceDate: Date,
+    occurrenceDate: Date, // Only used for non-recurring events
+    generatedAt: Date,
+  },
+  // For recurring events: indicates that service codes are used instead of expiring QR
+  usesServiceCodes: {
+    type: Boolean,
+    default: false, // Set to true automatically if event is recurring
   },
   createdAt: {
     type: Date,

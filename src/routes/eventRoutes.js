@@ -13,6 +13,8 @@ import {
   generateQRCode,
   getQRCode,
   getEventByToken,
+  getServiceCode,
+  regenerateServiceCode,
 } from '../controllers/eventController.js';
 import { authenticateToken, authorizeRole } from '../middleware/auth.js';
 import { resolveBranchContext } from '../middleware/branchContext.js';
@@ -36,6 +38,10 @@ router.post('/:eventId/register', authenticateToken, resolveBranchContext, requi
 // QR code routes
 router.post('/:id/qr-code', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), requireFeature('event_management'), generateQRCode);
 router.get('/:id/qr-code', authenticateToken, resolveBranchContext, requireFeature('event_management'), getQRCode);
+
+// Service code routes (for recurring events)
+router.get('/:id/service-code', authenticateToken, resolveBranchContext, getServiceCode);
+router.post('/:id/service-code', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), regenerateServiceCode);
 
 // Sharing routes (feature-gated)
 router.post('/:id/share', authenticateToken, resolveBranchContext, requireFeature('event_sharing'), generateShareLink);

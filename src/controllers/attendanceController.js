@@ -7,9 +7,11 @@ import Attendance from '../models/Attendance.js';
 import AttendanceRecord from '../models/AttendanceRecord.js';
 import Event from '../models/Event.js';
 import Member from '../models/Member.js';
+import ServiceCode from '../models/ServiceCode.js';
 import { branchFilter, resolveCreateBranch } from '../utils/branchQuery.js';
 import { getNextOccurrence, getCurrentOccurrence } from '../utils/occurrenceHelper.js';
 import { normalizePhone, findMemberByPhone } from '../utils/phoneUtils.js';
+import { serviceCodeService } from '../services/serviceCodeService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -197,7 +199,7 @@ export const getAttendanceStats = async (req, res) => {
 
 export const checkInWithQR = async (req, res) => {
   try {
-    const { token, memberId, userId, name, email, phone } = req.body;
+    const { token, serviceCode, memberId, userId, name, email, phone } = req.body;
 
     if (!token) {
       return res.status(400).json({ error: 'QR token is required' });
@@ -210,18 +212,42 @@ export const checkInWithQR = async (req, res) => {
       return res.status(404).json({ error: 'Invalid QR code' });
     }
 
-    // Check if QR code is expired
-    if (event.qrCode.expiresAt && new Date() > new Date(event.qrCode.expiresAt)) {
+    // Check if QR code is expired (only for non-recurring events)
+    if (!event.isRecurring && event.qrCode.expiresAt && new Date() > new Date(event.qrCode.expiresAt)) {
       return res.status(410).json({ error: 'QR code has expired' });
     }
 
-    // For recurring events, use occurrence-specific start date
+    // For recurring events, calculate current occurrence and validate service code
     let occurrenceDate = null;
     let checkStartDate = event.startDate;
 
-    if (event.isRecurring && event.qrCode.occurrenceDate) {
-      occurrenceDate = event.qrCode.occurrenceDate;
-      checkStartDate = occurrenceDate;
+    if (event.isRecurring && event.usesServiceCodes) {
+      // Find current or next occurrence
+      const occurrence = getCurrentOccurrence(event) || getNextOccurrence(event);
+      if (!occurrence) {
+        return res.status(400).json({ error: 'No upcoming occurrences for this event' });
+      }
+
+      occurrenceDate = occurrence.startDate;
+      checkStartDate = occurrence.startDate;
+
+      // Validate service code
+      if (!serviceCode) {
+        return res.status(400).json({
+          error: 'Service code is required for this event',
+          requiresServiceCode: true
+        });
+      }
+
+      const isValidCode = await serviceCodeService.validateCode(
+        serviceCode,
+        event._id,
+        occurrenceDate
+      );
+
+      if (!isValidCode) {
+        return res.status(400).json({ error: 'Invalid or expired service code' });
+      }
     }
 
     // Check if event has started

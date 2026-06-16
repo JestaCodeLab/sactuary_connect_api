@@ -26,8 +26,8 @@ router.get('/overview', authenticateToken, resolveBranchContext, authorizeRole([
 router.get('/reports', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), financeAccountApproved(), requireFeature('advanced_financial_reporting'), getFinanceReport);
 
 // Transaction ledger
-router.get('/transactions', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), financeAccountApproved(), getTransactions);
-router.get('/transactions/summary', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), financeAccountApproved(), getTransactionSummary);
-router.get('/transactions/:id', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), financeAccountApproved(), getTransactionById);
+router.get('/transactions', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), getTransactions);
+router.get('/transactions/summary', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), getTransactionSummary);
+router.get('/transactions/:id', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), getTransactionById);
 
 export default router;
