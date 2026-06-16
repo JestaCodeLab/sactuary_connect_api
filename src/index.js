@@ -52,8 +52,26 @@ app.use(cors({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Serve export files statically
-app.use('/exports', express.static(path.join(__dirname, '../exports')));
+// Serve export files statically with CORS headers
+app.use('/exports', (req, res, next) => {
+  const origin = req.get('origin');
+  const allowedOrigins = [
+    'http://localhost:3000',
+    'https://app.sanctuaryconnect.org',
+    process.env.CLIENT_URL,
+  ].filter(Boolean);
+
+  if (allowedOrigins.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  }
+  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+}, express.static(path.join(__dirname, '../exports')));
 
 // Routes
 app.use('/api/auth', authRoutes);
