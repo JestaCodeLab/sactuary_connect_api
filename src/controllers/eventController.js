@@ -484,8 +484,14 @@ export const getEventByToken = async (req, res) => {
       responseStartDate = event.qrCode.occurrenceDate;
       responseEndDate = new Date(new Date(event.qrCode.occurrenceDate).getTime() + duration);
     } else if (event.isRecurring) {
-      // If no occurrence date set, use current/next occurrence
-      occurrenceDate = new Date();
+      // If no occurrence date set, compute next occurrence
+      const nextOccurrence = getNextOccurrence(event, now);
+      if (nextOccurrence) {
+        occurrenceDate = nextOccurrence.startDate;
+        const duration = new Date(event.endDate).getTime() - new Date(event.startDate).getTime();
+        responseStartDate = nextOccurrence.startDate;
+        responseEndDate = new Date(new Date(nextOccurrence.startDate).getTime() + duration);
+      }
     }
 
     res.json({
