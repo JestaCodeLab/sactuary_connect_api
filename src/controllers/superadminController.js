@@ -1039,12 +1039,8 @@ export const approveFinanceAccount = async (req, res) => {
       financeAccountId: account._id,
     });
 
-    // Fire async Paystack subaccount creation (non-blocking)
-    setImmediate(() =>
-      processFinanceAccountApproval(account._id, req.user._id).catch((err) =>
-        console.error('[approveFinanceAccount] Paystack job error:', err)
-      )
-    );
+    // Paystack subaccount setup is now a manual action triggered by superadmin via setupPaystackSubaccount endpoint
+    // No longer auto-triggered on approval
 
     // Log to audit trail
     await log(req.user._id, 'approve_finance_account', {
@@ -1189,6 +1185,39 @@ export const revokeFinanceAccount = async (req, res) => {
   } catch (error) {
     console.error('Error revoking finance account:', error);
     res.status(500).json({ error: 'Failed to revoke finance account' });
+  }
+};
+
+export const setupPaystackSubaccount = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const account = await FinanceAccount.findById(id);
+    if (!account) {
+      return res.status(404).json({ error: 'Finance account not found' });
+    }
+
+    if (account.status !== 'approved') {
+      return res.status(400).json({
+        error: `Can only setup Paystack for approved accounts. Current status: ${account.status}`,
+      });
+    }
+
+    // Trigger Paystack subaccount creation
+    processFinanceAccountApproval(account._id, req.user._id).catch((err) =>
+      console.error('[setupPaystackSubaccount] Paystack job error:', err)
+    );
+
+    res.json({
+      message: 'Paystack setup initiated. Please wait a moment for the setup to complete.',
+      account: {
+        _id: account._id,
+        paystackMerchantId: account.paystackMerchantId || null,
+      },
+    });
+  } catch (error) {
+    console.error('Error setting up Paystack subaccount:', error);
+    res.status(500).json({ error: 'Failed to setup Paystack subaccount' });
   }
 };
 

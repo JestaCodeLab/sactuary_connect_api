@@ -60,22 +60,14 @@ const financeAccountSchema = new mongoose.Schema({
     required: true,
   },
   businessRegistrationDoc: {
-    type: String, // S3 URL
-    required: true,
+    type: String, // Cloudinary URL
+    default: null,
   },
   businessAddress: {
     type: String,
     required: true,
   },
-  taxId: {
-    type: String,
-    required: true,
-  },
-  taxIdDoc: {
-    type: String, // S3 URL
-    required: true,
-  },
-  
+
   // === OWNER/PRINCIPAL DETAILS ===
   ownerFullName: {
     type: String,
@@ -99,8 +91,8 @@ const financeAccountSchema = new mongoose.Schema({
     required: true,
   },
   ownerIdDoc: {
-    type: String, // S3 URL
-    required: true,
+    type: String, // Cloudinary URL
+    default: null,
   },
   
   // === PAYSTACK ACCOUNT FIELDS ===

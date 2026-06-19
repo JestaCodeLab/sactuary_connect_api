@@ -16,6 +16,11 @@ async function refreshRecurringQRCodes() {
 
     for (const event of events) {
       try {
+        // Skip if event already has a permanent QR (no expiration = permanent token for all occurrences)
+        if (event.qrCode?.token && !event.qrCode?.expiresAt) {
+          continue; // Permanent QR already set, don't override
+        }
+
         // Find the current or next occurrence
         const occurrence = getCurrentOccurrence(event, now) || getNextOccurrence(event, now);
         if (!occurrence) continue; // Series has ended

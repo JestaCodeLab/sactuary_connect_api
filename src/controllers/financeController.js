@@ -4,6 +4,7 @@ import Transaction from '../models/Transaction.js';
 import FinanceAccount from '../models/FinanceAccount.js';
 import Organization from '../models/Organization.js';
 import { branchFilter, resolveCreateBranch } from '../utils/branchQuery.js';
+import cloudinary from '../config/cloudinary.js';
 
 export const getFinanceOverview = async (req, res) => {
   try {
@@ -305,7 +306,6 @@ export const submitFinanceAccount = async (req, res) => {
       businessType,
       businessRegistration,
       businessAddress,
-      taxId,
       ownerFullName,
       ownerEmail,
       ownerPhone,
@@ -323,7 +323,6 @@ export const submitFinanceAccount = async (req, res) => {
       'businessType',
       'businessRegistration',
       'businessAddress',
-      'taxId',
       'ownerFullName',
       'ownerEmail',
       'ownerPhone',
@@ -341,9 +340,53 @@ export const submitFinanceAccount = async (req, res) => {
       }
     }
 
-    // Validate document URLs (assuming they're in the request body from frontend after S3 upload)
-    if (!req.body.businessRegistrationDoc || !req.body.taxIdDoc || !req.body.ownerIdDoc) {
-      return res.status(400).json({ error: 'All required documents must be uploaded' });
+    // Validate uploaded files (business registration and owner ID only)
+    if (!req.files || !req.files.businessRegistrationDoc || !req.files.ownerIdDoc) {
+      return res.status(400).json({ error: 'Business registration and owner ID documents are required' });
+    }
+
+    let businessRegistrationDocUrl, ownerIdDocUrl;
+
+    try {
+      // Upload businessRegistrationDoc to Cloudinary
+      businessRegistrationDocUrl = await new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+          { resource_type: 'auto', folder: 'sanctuary_connect/kyc/business_registration' },
+          (error, result) => {
+            if (error) {
+              console.error('Cloudinary upload error for businessRegistrationDoc:', error);
+              reject(error);
+            } else {
+              console.log('Successfully uploaded businessRegistrationDoc:', result.secure_url);
+              resolve(result.secure_url);
+            }
+          }
+        );
+        stream.end(req.files.businessRegistrationDoc[0].buffer);
+      });
+
+      // Upload ownerIdDoc to Cloudinary
+      ownerIdDocUrl = await new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+          { resource_type: 'auto', folder: 'sanctuary_connect/kyc/owner_id' },
+          (error, result) => {
+            if (error) {
+              console.error('Cloudinary upload error for ownerIdDoc:', error);
+              reject(error);
+            } else {
+              console.log('Successfully uploaded ownerIdDoc:', result.secure_url);
+              resolve(result.secure_url);
+            }
+          }
+        );
+        stream.end(req.files.ownerIdDoc[0].buffer);
+      });
+    } catch (uploadError) {
+      console.error('Error uploading documents to Cloudinary:', uploadError);
+      return res.status(500).json({
+        error: 'Failed to upload documents',
+        details: uploadError instanceof Error ? uploadError.message : 'Unknown error'
+      });
     }
 
     const organizationId = req.organizationId;
@@ -362,16 +405,14 @@ export const submitFinanceAccount = async (req, res) => {
       financeAccount.businessName = businessName;
       financeAccount.businessType = businessType;
       financeAccount.businessRegistration = businessRegistration;
-      financeAccount.businessRegistrationDoc = req.body.businessRegistrationDoc;
+      financeAccount.businessRegistrationDoc = businessRegistrationDocUrl;
       financeAccount.businessAddress = businessAddress;
-      financeAccount.taxId = taxId;
-      financeAccount.taxIdDoc = req.body.taxIdDoc;
       financeAccount.ownerFullName = ownerFullName;
       financeAccount.ownerEmail = ownerEmail;
       financeAccount.ownerPhone = ownerPhone;
       financeAccount.ownerIdType = ownerIdType;
       financeAccount.ownerIdNumber = ownerIdNumber;
-      financeAccount.ownerIdDoc = req.body.ownerIdDoc;
+      financeAccount.ownerIdDoc = ownerIdDocUrl;
       financeAccount.bankCode = bankCode;
       financeAccount.bankAccountName = bankAccountName;
       financeAccount.bankAccountNumber = bankAccountNumber;
@@ -391,16 +432,14 @@ export const submitFinanceAccount = async (req, res) => {
         businessName,
         businessType,
         businessRegistration,
-        businessRegistrationDoc: req.body.businessRegistrationDoc,
+        businessRegistrationDoc: businessRegistrationDocUrl,
         businessAddress,
-        taxId,
-        taxIdDoc: req.body.taxIdDoc,
         ownerFullName,
         ownerEmail,
         ownerPhone,
         ownerIdType,
         ownerIdNumber,
-        ownerIdDoc: req.body.ownerIdDoc,
+        ownerIdDoc: ownerIdDocUrl,
         bankCode,
         bankAccountName,
         bankAccountNumber,
@@ -417,6 +456,13 @@ export const submitFinanceAccount = async (req, res) => {
     }
 
     await financeAccount.save();
+
+    console.log('Finance account saved successfully:', {
+      id: financeAccount._id,
+      businessRegistrationDocUrl,
+      ownerIdDocUrl,
+      status: financeAccount.status
+    });
 
     // Update organization's financeAccountId if not already set
     await Organization.updateOne(
@@ -501,6 +547,65 @@ export const getFinanceAccountStatus = async (req, res) => {
   }
 };
 
+export const getBankList = async (req, res) => {
+  try {
+    // Comprehensive list of Ghanaian banks (with Paystack bank codes)
+    const ghanaianBanks = [
+      // Major Banks
+      { code: '011', name: 'Guaranty Trust Bank Ghana' },
+      { code: '012', name: 'Ecobank Ghana' },
+      { code: '013', name: 'Barclays Bank Ghana' },
+      { code: '014', name: 'Zenith Bank Ghana' },
+      { code: '015', name: 'Société Générale Ghana' },
+      { code: '018', name: 'Access Bank Ghana' },
+      { code: '019', name: 'Stanbic Bank Ghana' },
+      { code: '020', name: 'Calbank Ghana' },
+      { code: '021', name: 'Prudential Bank Ghana' },
+      { code: '022', name: 'First National Bank Ghana' },
+      { code: '023', name: 'Metropolitan Bank Ghana' },
+      { code: '024', name: 'GCB Bank Ghana' },
+      { code: '025', name: 'Agriculture Development Bank' },
+      { code: '026', name: 'Absa Bank Ghana' },
+      { code: '027', name: 'ICBC Ghana' },
+      { code: '030', name: 'United Bank for Africa Ghana' },
+      { code: '031', name: 'The Delf Bank Ghana' },
+      { code: '032', name: 'Fidelity Bank Ghana' },
+      { code: '033', name: 'Habib Ghana Bank' },
+      { code: '034', name: 'Mega Bank Ghana' },
+      { code: '035', name: 'Heritage Bank Ghana' },
+      { code: '036', name: 'Vertex Bank Ghana' },
+      { code: '037', name: 'Infinity Bank Ghana' },
+
+      // Savings & Loans (Non-Bank Financial Institutions)
+      { code: '038', name: 'OmniBSIC Ghana' },
+      { code: '039', name: 'Cashlink Ghana' },
+      { code: '040', name: 'Ghana Savings and Loans' },
+      { code: '041', name: 'UniCredit Ghana' },
+      { code: '042', name: 'Ark Foundation Savings and Loans' },
+      { code: '043', name: 'Advances Finance Limited' },
+      { code: '044', name: 'Midland Savings and Loans' },
+      { code: '045', name: 'Legacy Bank Ghana' },
+      { code: '046', name: 'Sinapi Aba Savings and Loans' },
+      { code: '047', name: 'Adeny Savings and Loans' },
+      { code: '048', name: 'First Capital Plus Bank' },
+      { code: '049', name: 'Community Savings and Loans' },
+      { code: '050', name: 'Speedex Money Ghana' },
+      { code: '051', name: 'Intercredit Bank Ghana' },
+      { code: '052', name: 'Consolidated Bank Ghana' },
+
+      // Mobile Money & Digital
+      { code: '053', name: 'MTN Ghana (Mobile Money)' },
+      { code: '054', name: 'Vodafone Ghana (Mobile Money)' },
+      { code: '055', name: 'AirtelTigo Ghana (Mobile Money)' },
+    ];
+
+    res.json({ banks: ghanaianBanks });
+  } catch (error) {
+    console.error('Error fetching bank list:', error);
+    res.status(500).json({ error: 'Failed to fetch bank list' });
+  }
+};
+
 export default {
   getFinanceOverview,
   getFinanceReport,
@@ -509,4 +614,5 @@ export default {
   getTransactionById,
   submitFinanceAccount,
   getFinanceAccountStatus,
+  getBankList,
 };

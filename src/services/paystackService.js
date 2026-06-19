@@ -160,7 +160,7 @@ export async function createMerchantAccount(financeAccountData) {
         success: true,
         paystackMerchantId: response.data.data.subaccount_code,
         paystackAuthorizationUrl: response.data.data.authorization_url || null,
-        liveMode: false,
+        liveMode: process.env.PAYSTACK_LIVE_MODE === 'true',
         rawResponse: response.data.data,
       };
     } else {

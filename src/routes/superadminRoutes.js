@@ -39,6 +39,7 @@ import {
   approveFinanceAccount,
   rejectFinanceAccount,
   revokeFinanceAccount,
+  setupPaystackSubaccount,
   getOrgFinanceAccount,
 } from '../controllers/superadminController.js';
 
@@ -107,5 +108,6 @@ router.get('/finance-accounts/:id', getFinanceAccountDetails);
 router.post('/finance-accounts/:id/approve', approveFinanceAccount);
 router.post('/finance-accounts/:id/reject', rejectFinanceAccount);
 router.post('/finance-accounts/:id/revoke', revokeFinanceAccount);
+router.post('/finance-accounts/:id/setup-paystack', setupPaystackSubaccount);
 
 export default router;
