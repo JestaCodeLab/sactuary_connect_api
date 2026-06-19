@@ -240,7 +240,7 @@ export const generateShareLink = async (req, res) => {
       await event.save();
     }
 
-    const clientUrl = process.env.CLIENT_URL || 'http://localhost:3000';
+    const clientUrl = process.env.CLIENT_URL || 'https://app.sanctuaryconnect.org';
     const shareUrl = `${clientUrl}/events/${event.shareToken}`;
 
     res.json({ shareUrl, shareToken: event.shareToken });
@@ -288,7 +288,7 @@ export const shareEventByEmail = async (req, res) => {
       await event.save();
     }
 
-    const clientUrl = process.env.CLIENT_URL || 'http://localhost:3000';
+    const clientUrl = process.env.CLIENT_URL || 'https://app.sanctuaryconnect.org';
     const shareUrl = `${clientUrl}/events/${event.shareToken}`;
 
     const startDate = new Date(event.startDate).toLocaleDateString('en-US', {

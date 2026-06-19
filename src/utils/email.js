@@ -78,7 +78,7 @@ export const sendPasswordResetEmail = async (email, firstName, resetToken) => {
       return true;
     }
 
-    const resetLink = `${process.env.CLIENT_URL}/reset-password?token=${resetToken}`;
+    const resetLink = `${process.env.CLIENT_URL || 'https://app.sanctuaryconnect.org'}/reset-password?token=${resetToken}`;
     const { subject, html, text } = emailTemplates.passwordReset(firstName, resetLink);
 
     const result = await sendEmailWithRetry({
@@ -109,7 +109,7 @@ export const sendPasswordResetEmail = async (email, firstName, resetToken) => {
  */
 export const sendInviteEmail = async (email, inviterName, churchName, token) => {
   try {
-    const inviteLink = `${process.env.CLIENT_URL}/accept-invite/${token}`;
+    const inviteLink = `${process.env.CLIENT_URL || 'https://app.sanctuaryconnect.org'}/accept-invite/${token}`;
 
     if (!hasEmailConfig) {
       console.warn('⚠️  EMAIL not configured. Invite link:', inviteLink);

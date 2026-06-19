@@ -325,7 +325,7 @@ export const initializeCheckout = async (req, res) => {
     const reference = `sub_${organizationId}_${Date.now()}`;
 
     // Build callback URL - redirect back to payment page with reference
-    const callbackUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/onboarding/payment?reference=${reference}`;
+    const callbackUrl = `${process.env.CLIENT_URL || 'https://app.sanctuaryconnect.org'}/onboarding/payment?reference=${reference}`;
 
     // Initialize Paystack transaction
     try {
