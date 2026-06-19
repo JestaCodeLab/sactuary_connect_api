@@ -470,6 +470,8 @@ export const exportEventAttendance = async (req, res) => {
     const { eventId } = req.params;
     const { format = 'csv', occurrenceDate } = req.query;
 
+    console.log('Export attendance request:', { eventId, format, occurrenceDate });
+
     const event = await Event.findById(eventId);
     if (!event) {
       return res.status(404).json({ error: 'Event not found' });
@@ -534,9 +536,13 @@ export const exportEventAttendance = async (req, res) => {
 
       const csv = [csvHeaders, ...csvRows].join('\n');
 
-      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
       res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
       return res.send(csv);
+    }
+
+    if (format !== 'pdf') {
+      return res.status(400).json({ error: 'Invalid export format' });
     }
 
     // PDF generation - stream directly to response
