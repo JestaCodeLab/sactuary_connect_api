@@ -463,7 +463,7 @@ export const getEventByToken = async (req, res) => {
     const now = new Date();
 
     const event = await Event.findOne({ 'qrCode.token': token })
-      .select('title description startDate endDate location eventType qrCode organizationId branchId status isRecurring recurrenceEndDate usesServiceCodes');
+      .select('title description startDate endDate location eventType qrCode organizationId branchId status isRecurring recurrencePattern recurrenceDay recurrenceEndDate usesServiceCodes');
 
     if (!event) {
       return res.status(404).json({ error: 'Invalid or expired check-in token' });
