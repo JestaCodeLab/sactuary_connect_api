@@ -545,20 +545,12 @@ export const exportEventAttendance = async (req, res) => {
       return res.status(400).json({ error: 'Invalid export format' });
     }
 
-    // PDF generation - save to file
-    const __dirname = path.dirname(fileURLToPath(import.meta.url));
-    const exportsDir = path.join(__dirname, '../../exports');
-
-    // Create exports directory if it doesn't exist
-    if (!fs.existsSync(exportsDir)) {
-      fs.mkdirSync(exportsDir, { recursive: true });
-    }
-
-    const filePath = path.join(exportsDir, fileName);
-    const writeStream = fs.createWriteStream(filePath);
+    // PDF generation - stream directly to response
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
 
     const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margin: 30 });
-    doc.pipe(writeStream);
+    doc.pipe(res);
 
     // Title
     doc.fontSize(18).font('Helvetica-Bold').text('Attendance Report', { align: 'center' });
@@ -619,28 +611,6 @@ export const exportEventAttendance = async (req, res) => {
     });
 
     doc.end();
-
-    // Return download URL when file is ready
-    writeStream.on('finish', () => {
-      const downloadUrl = `/api/attendance/export/download/${path.basename(fileName)}`;
-      res.json({ downloadUrl });
-
-      // Clean up old files (keep only last 24 hours)
-      const now = Date.now();
-      const maxAge = 24 * 60 * 60 * 1000; // 24 hours
-      fs.readdirSync(exportsDir).forEach(file => {
-        const filePath = path.join(exportsDir, file);
-        const stat = fs.statSync(filePath);
-        if (now - stat.mtime.getTime() > maxAge) {
-          fs.unlinkSync(filePath);
-        }
-      });
-    });
-
-    writeStream.on('error', (error) => {
-      console.error('PDF write stream error:', error);
-      res.status(500).json({ error: 'Failed to generate PDF' });
-    });
   } catch (error) {
     console.error('Error exporting event attendance:', {
       message: error.message,
