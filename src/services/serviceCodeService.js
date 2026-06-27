@@ -5,10 +5,10 @@ export const serviceCodeService = {
   /**
    * Generate a service code for a specific event occurrence
    * @param eventId - Event ID
-   * @param occurrenceDate - The start date of the occurrence
+   * @param occurrenceDate - The start date of the occurrence (with time-of-day)
    * @param organizationId - Organization ID
    * @param branchId - Branch ID
-   * @param eventData - Object with startDate and endDate to calculate duration
+   * @param eventData - Object with startDate and endDate (occurrence times, not template)
    */
   generateCodeForOccurrence: async (eventId, occurrenceDate, organizationId, branchId, eventData = null) => {
     try {
@@ -27,14 +27,14 @@ export const serviceCodeService = {
 
       // Calculate expiration time
       let expiresAt;
-      if (eventData?.startDate && eventData?.endDate) {
-        // Calculate event duration from template dates
-        const eventDuration = new Date(eventData.endDate).getTime() - new Date(eventData.startDate).getTime();
-        // Set expiration to occurrence end time + 1 hour buffer
-        expiresAt = new Date(new Date(occurrenceDate).getTime() + eventDuration + 60 * 60 * 1000);
+      if (eventData?.endDate) {
+        // Use the occurrence's actual end time + 24 hours buffer
+        // This allows members time to fill in their info and submit the form,
+        // and accommodates late arrivals and people finding QR codes
+        expiresAt = new Date(new Date(eventData.endDate).getTime() + 24 * 60 * 60 * 1000);
       } else {
-        // Fallback: expire 3 hours after event start
-        expiresAt = new Date(new Date(occurrenceDate).getTime() + 3 * 60 * 60 * 1000);
+        // Fallback: expire 24 hours after event start
+        expiresAt = new Date(new Date(occurrenceDate).getTime() + 24 * 60 * 60 * 1000);
       }
 
       const serviceCode = new ServiceCode({

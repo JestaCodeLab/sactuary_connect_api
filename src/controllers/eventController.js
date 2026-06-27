@@ -535,21 +535,31 @@ export const getServiceCode = async (req, res) => {
     }
 
     // Determine which occurrence to fetch service code for
-    let targetOccurrence;
+    let targetOccurrenceStartDate;
     if (occurrenceDate) {
-      // If specific date provided, use it
-      targetOccurrence = { startDate: new Date(occurrenceDate) };
+      // Parse provided occurrence date and find the matching occurrence with correct time-of-day
+      const providedDate = new Date(occurrenceDate);
+      const occurrences = computeOccurrences(event, providedDate, new Date(providedDate.getTime() + 24 * 60 * 60 * 1000));
+      const matchingOccurrence = occurrences.find(occ =>
+        occ.startDate.toDateString() === providedDate.toDateString()
+      );
+
+      if (!matchingOccurrence) {
+        return res.status(404).json({ error: 'No occurrence found for the provided date' });
+      }
+      targetOccurrenceStartDate = matchingOccurrence.startDate;
     } else {
       // Get current or next occurrence
-      targetOccurrence = getCurrentOccurrence(event) || getNextOccurrence(event);
+      const targetOccurrence = getCurrentOccurrence(event) || getNextOccurrence(event);
       if (!targetOccurrence) {
         return res.status(404).json({ error: 'No current or upcoming occurrences for this event' });
       }
+      targetOccurrenceStartDate = targetOccurrence.startDate;
     }
 
     const serviceCode = await serviceCodeService.getCodeForOccurrence(
       event._id,
-      targetOccurrence.startDate
+      targetOccurrenceStartDate
     );
 
     if (!serviceCode) {
@@ -588,23 +598,35 @@ export const regenerateServiceCode = async (req, res) => {
       await event.save();
     }
 
-    // If no occurrenceDate provided, use current or next occurrence
-    let targetOccurrenceDate = occurrenceDate;
-    if (!targetOccurrenceDate) {
-      const occurrence = getCurrentOccurrence(event) || getNextOccurrence(event);
-      if (!occurrence) {
+    // Determine target occurrence with full date/time info
+    let targetOccurrence;
+    if (occurrenceDate) {
+      // Parse provided occurrence date and find the matching occurrence with correct time-of-day
+      const providedDate = new Date(occurrenceDate);
+      const occurrences = computeOccurrences(event, providedDate, new Date(providedDate.getTime() + 24 * 60 * 60 * 1000));
+      const matchingOccurrence = occurrences.find(occ =>
+        occ.startDate.toDateString() === providedDate.toDateString()
+      );
+
+      if (!matchingOccurrence) {
+        return res.status(400).json({ error: 'No occurrence found for the provided date' });
+      }
+      targetOccurrence = matchingOccurrence;
+    } else {
+      // Use current or next occurrence
+      targetOccurrence = getCurrentOccurrence(event) || getNextOccurrence(event);
+      if (!targetOccurrence) {
         return res.status(400).json({ error: 'No upcoming occurrences for this event' });
       }
-      targetOccurrenceDate = occurrence.startDate;
     }
 
-    // Generate new service code (overwrites existing if present)
+    // Generate new service code with proper occurrence end time
     const serviceCode = await serviceCodeService.generateCodeForOccurrence(
       event._id,
-      targetOccurrenceDate,
+      targetOccurrence.startDate,
       event.organizationId,
       event.branchId,
-      { startDate: event.startDate, endDate: event.endDate }
+      { startDate: targetOccurrence.startDate, endDate: targetOccurrence.endDate }
     );
 
     res.json({
