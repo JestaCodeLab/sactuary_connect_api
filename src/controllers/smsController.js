@@ -15,13 +15,13 @@ import axios from 'axios';
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY;
 const PRICE_PER_CREDIT = 0.035; // GHS
 
-// Get SMS credits balance
+// Get SMS credits balance (internal)
 export const getCreditsBalance = async (req, res) => {
   try {
     const merchantId = req.user.organizationId;
-    
+
     const smsCredit = await SmsCredit.getOrCreate(merchantId, 0);
-    
+
     res.json({
       balance: smsCredit.balance,
       totalPurchased: smsCredit.totalPurchased,
@@ -31,6 +31,17 @@ export const getCreditsBalance = async (req, res) => {
     });
   } catch (error) {
     console.error('Get credits balance error:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Get live BMS Africa platform balance
+export const getBmsBalance = async (req, res) => {
+  try {
+    const result = await smsService.checkBalance();
+    res.json(result);
+  } catch (error) {
+    console.error('BMS balance check error:', error);
     res.status(500).json({ error: error.message });
   }
 };
@@ -366,7 +377,7 @@ export const sendSingleSMS = async (req, res) => {
     }
 
     // Check SMS credits
-    const creditCheck = await checkSmsCredits(merchantId, 1);
+    const creditCheck = await checkSmsCredits(merchantId, 1, message);
     if (!creditCheck.allowed) {
       return res.status(403).json({
         error: `Insufficient SMS credits. You need ${creditCheck.required} credit(s) but only have ${creditCheck.currentBalance}`,
@@ -419,7 +430,7 @@ export const sendBulkSMS = async (req, res) => {
     }
 
     // Check SMS credits
-    const creditCheck = await checkSmsCredits(merchantId, phones.length);
+    const creditCheck = await checkSmsCredits(merchantId, phones.length, message);
     if (!creditCheck.allowed) {
       return res.status(403).json({
         error: `Insufficient SMS credits. You need ${creditCheck.required} credit(s) but only have ${creditCheck.currentBalance}`,
@@ -480,7 +491,7 @@ export const sendToMembers = async (req, res) => {
     }
 
     // Check SMS credits
-    const creditCheck = await checkSmsCredits(merchantId, memberIds.length);
+    const creditCheck = await checkSmsCredits(merchantId, memberIds.length, message);
     if (!creditCheck.allowed) {
       return res.status(403).json({
         error: `Insufficient SMS credits. You need ${creditCheck.required} credit(s) but only have ${creditCheck.currentBalance}`,
@@ -556,7 +567,7 @@ export const sendToBranch = async (req, res) => {
     });
 
     // Check SMS credits
-    const creditCheck = await checkSmsCredits(merchantId, memberCount);
+    const creditCheck = await checkSmsCredits(merchantId, memberCount, message);
     if (!creditCheck.allowed) {
       return res.status(403).json({
         error: `Insufficient SMS credits. You need ${creditCheck.required} credit(s) but only have ${creditCheck.currentBalance}`,
@@ -617,7 +628,7 @@ export const sendToDepartment = async (req, res) => {
     });
 
     // Check SMS credits
-    const creditCheck = await checkSmsCredits(merchantId, memberCount);
+    const creditCheck = await checkSmsCredits(merchantId, memberCount, message);
     if (!creditCheck.allowed) {
       return res.status(403).json({
         error: `Insufficient SMS credits. You need ${creditCheck.required} credit(s) but only have ${creditCheck.currentBalance}`,
@@ -675,7 +686,7 @@ export const sendToAllMembers = async (req, res) => {
     });
 
     // Check SMS credits
-    const creditCheck = await checkSmsCredits(merchantId, memberCount);
+    const creditCheck = await checkSmsCredits(merchantId, memberCount, message);
     if (!creditCheck.allowed) {
       return res.status(403).json({
         error: `Insufficient SMS credits. You need ${creditCheck.required} credit(s) but only have ${creditCheck.currentBalance}`,

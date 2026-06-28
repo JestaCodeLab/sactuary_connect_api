@@ -15,7 +15,6 @@ const smsTemplateSchema = new mongoose.Schema(
     message: {
       type: String,
       required: true,
-      maxlength: 160,
     },
     description: {
       type: String,

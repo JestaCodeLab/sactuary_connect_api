@@ -80,20 +80,25 @@ export const checkBranchLimit = async (organizationId) => {
  * Check if organization has SMS credits remaining
  * Returns { allowed: boolean, currentBalance: number, required: number }
  */
-export const checkSmsCredits = async (organizationId, smsCountRequired = 1) => {
+export const checkSmsCredits = async (organizationId, recipientCount = 1, message = '') => {
   try {
     const smsCredit = await SmsCredit.findOne({ merchantId: organizationId });
+    const isUnicode = message ? /[^ - -ÿ€ŠšŽžŒœŸ]/.test(message) : false;
+    const charsPerSegment = isUnicode ? 70 : 160;
+    const segments = message ? (Math.ceil(message.length / charsPerSegment) || 1) : 1;
+    const creditsRequired = segments * recipientCount;
+
     if (!smsCredit) {
-      return { allowed: false, currentBalance: 0, required: smsCountRequired, reason: 'No SMS credits' };
+      return { allowed: false, currentBalance: 0, required: creditsRequired, reason: 'No SMS credits' };
     }
 
-    const hasCredits = smsCredit.balance >= smsCountRequired;
+    const hasCredits = smsCredit.balance >= creditsRequired;
 
     return {
       allowed: hasCredits,
       currentBalance: smsCredit.balance,
-      required: smsCountRequired,
-      shortfall: Math.max(0, smsCountRequired - smsCredit.balance),
+      required: creditsRequired,
+      shortfall: Math.max(0, creditsRequired - smsCredit.balance),
     };
   } catch (error) {
     console.error('Error checking SMS credits:', error);
