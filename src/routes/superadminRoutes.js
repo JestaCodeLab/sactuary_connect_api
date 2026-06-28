@@ -28,6 +28,8 @@ import {
   deleteMember,
   listSmsCredits,
   adjustSmsCredits,
+  getBmsPlatformBalance,
+  checkBmsBalance,
   listSmsPackages,
   createSmsPackage,
   updateSmsPackage,
@@ -95,6 +97,8 @@ router.delete('/sms-packages/:id', deleteSmsPackage);
 // SMS Credits
 router.get('/sms-credits', listSmsCredits);
 router.patch('/sms-credits/:orgId', adjustSmsCredits);
+router.get('/sms-credits/bms-balance', getBmsPlatformBalance);
+router.post('/sms-credits/check-bms-balance', checkBmsBalance);
 
 // Audit log
 router.get('/audit-log', getAuditLog);

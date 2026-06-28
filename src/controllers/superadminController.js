@@ -4,6 +4,8 @@ import User from '../models/User.js';
 import Organization from '../models/Organization.js';
 import Subscription from '../models/Subscription.js';
 import SmsCredit from '../models/SmsCredit.js';
+import PlatformConfig from '../models/PlatformConfig.js';
+import smsService from '../services/smsService.js';
 import SmsPackage from '../models/SmsPackage.js';
 import Member from '../models/Member.js';
 import Branch from '../models/Branch.js';
@@ -889,6 +891,49 @@ export const adjustSmsCredits = async (req, res) => {
   });
 
   res.json({ message: 'SMS credits updated', balance: credit.balance });
+};
+
+// Get stored BMS platform balance (last synced from a send response)
+export const getBmsPlatformBalance = async (req, res) => {
+  try {
+    const stored = await PlatformConfig.get('bms_balance');
+    res.json({
+      balance: stored?.balance ?? null,
+      updatedAt: stored?.updatedAt ?? null,
+      hasData: stored !== null,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Send a test SMS to SUPERADMIN_PHONE, capture credit_left, persist it
+export const checkBmsBalance = async (req, res) => {
+  const phone = process.env.SUPERADMIN_PHONE;
+  if (!phone) return res.status(500).json({ error: 'SUPERADMIN_PHONE not set in .env' });
+
+  try {
+    const result = await smsService.sendSingleFree({
+      phone,
+      message: 'Sanctuary Connect: platform balance check. Please ignore.',
+      category: 'general',
+      metadata: { isBmsBalanceCheck: true },
+    });
+
+    const stored = await PlatformConfig.get('bms_balance');
+
+    res.json({
+      success: result.success,
+      balance: stored?.balance ?? null,
+      updatedAt: stored?.updatedAt ?? null,
+      smsSent: result.success,
+      campaignId: result.campaignId,
+    });
+  } catch (error) {
+    const status = error.response?.status;
+    const detail = error.response?.data?.message || error.response?.data?.error || error.message;
+    res.status(500).json({ error: detail || error.message });
+  }
 };
 
 // ─── Audit Log ───────────────────────────────────────────────────────────────
