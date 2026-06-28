@@ -18,7 +18,7 @@ const recipientSchema = new mongoose.Schema({
   sentAt: Date,
   deliveredAt: Date,
   failureReason: String,
-  hubtelMessageId: String,
+  providerMessageId: String,
   deliveryReport: String
 }, { _id: true });
 
@@ -77,6 +77,7 @@ const smsLogSchema = new mongoose.Schema({
     required: true,
     default: 0
   },
+  bmscampaignId: String,
   overallStatus: {
     type: String,
     enum: ['pending', 'processing', 'submitted', 'delivered', 'failed', 'partial'],
@@ -161,8 +162,8 @@ smsLogSchema.methods.updateRecipientStatus = async function(phoneNumber, status,
       }
     }
 
-    if (additionalData.hubtelMessageId) {
-      recipient.hubtelMessageId = additionalData.hubtelMessageId;
+    if (additionalData.providerMessageId) {
+      recipient.providerMessageId = additionalData.providerMessageId;
     }
 
     if (additionalData.deliveryReport) {

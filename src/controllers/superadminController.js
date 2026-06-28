@@ -260,6 +260,7 @@ export const updateOrganization = async (req, res) => {
     email,
     website,
     address,
+    smsConfig,
   } = req.body;
 
   const org = await Organization.findById(id);
@@ -269,6 +270,7 @@ export const updateOrganization = async (req, res) => {
     churchName: org.churchName,
     legalName: org.legalName,
     currency: org.currency,
+    smsConfig: org.smsConfig,
   };
 
   if (churchName != null) org.churchName = churchName;
@@ -283,11 +285,27 @@ export const updateOrganization = async (req, res) => {
   if (website != null) org.website = website;
   if (address != null) org.address = address;
 
+  // Handle SMS Config updates (superadmin can update sender ID and status)
+  if (smsConfig != null) {
+    org.smsConfig = org.smsConfig || {};
+    if (smsConfig.senderId != null) org.smsConfig.senderId = smsConfig.senderId;
+    if (smsConfig.senderIdStatus != null) org.smsConfig.senderIdStatus = smsConfig.senderIdStatus;
+    if (smsConfig.senderIdPurpose != null) org.smsConfig.senderIdPurpose = smsConfig.senderIdPurpose;
+  }
+
   await org.save();
 
   await log(req.user.userId, 'update_organization', {
     targetOrgId: id,
-    details: { before, after: { churchName: org.churchName, legalName: org.legalName, currency: org.currency } },
+    details: {
+      before,
+      after: {
+        churchName: org.churchName,
+        legalName: org.legalName,
+        currency: org.currency,
+        smsConfig: org.smsConfig,
+      },
+    },
   });
 
   res.json({ message: 'Organization updated', org });

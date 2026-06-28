@@ -107,14 +107,14 @@ async function sendBirthdaySMS() {
             .replace(/\{\{age\}\}/g, age.toString())
             .replace(/\{\{churchName\}\}/g, organization.churchName || '');
 
-          // Send SMS via Hubtel
-          const result = await smsService.sendSingle(
-            member.phone,
+          // Send SMS via BMS Africa
+          const result = await smsService.sendSingle({
+            phone: member.phone,
             message,
-            organization._id,
-            member.branchId || null,
-            'birthday_automation'
-          );
+            merchantId: organization._id,
+            userId: null,
+            category: 'birthday'
+          });
 
           if (result.success) {
             totalSent++;

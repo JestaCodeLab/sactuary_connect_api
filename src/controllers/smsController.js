@@ -3,6 +3,7 @@ import notificationService from '../services/notificationService.js';
 import SmsCredit from '../models/SmsCredit.js';
 import SmsPayment from '../models/SmsPayment.js';
 import SmsLog from '../models/SmsLog.js';
+import SmsPackage from '../models/SmsPackage.js';
 import Member from '../models/Member.js';
 import Department from '../models/Department.js';
 import Branch from '../models/Branch.js';
@@ -119,13 +120,19 @@ export const purchaseCredits = async (req, res) => {
 export const initializeSmsPayment = async (req, res) => {
   try {
     const organizationId = req.user.organizationId;
-    const { credits } = req.body;
+    const { credits, priceInGhs } = req.body;
 
     if (!credits || credits <= 0) {
       return res.status(400).json({ error: 'Invalid credit amount' });
     }
 
-    const amountInGhs = credits * PRICE_PER_CREDIT;
+    if (!priceInGhs || priceInGhs <= 0) {
+      return res.status(400).json({ error: 'Invalid price amount' });
+    }
+
+    // Use the provided price from the package (not recalculated)
+    const amountInGhs = priceInGhs;
+    const calculatedPricePerCredit = priceInGhs / credits;
 
     // Create payment record
     const payment = new SmsPayment({
@@ -144,7 +151,7 @@ export const initializeSmsPayment = async (req, res) => {
       success: true,
       reference: payment._id,
       credits,
-      pricePerCredit: PRICE_PER_CREDIT,
+      pricePerCredit: calculatedPricePerCredit,
       subtotal: amountInGhs,
       tax: 0,
       total: amountInGhs,
@@ -718,7 +725,11 @@ export const getSmsLogs = async (req, res) => {
 
     const query = { merchantId };
 
-    if (status) query.overallStatus = status;
+    if (status) {
+      // Support comma-separated status values (e.g., "delivered,submitted")
+      const statusArray = status.split(',').map(s => s.trim());
+      query.overallStatus = statusArray.length > 1 ? { $in: statusArray } : status;
+    }
     if (category) query.category = category;
     if (messageType) query.messageType = messageType;
     if (startDate || endDate) {
@@ -983,6 +994,110 @@ export const batchUpdateDeliveryStatuses = async (req, res) => {
     });
   } catch (error) {
     console.error('Batch update delivery statuses error:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Register Sender ID
+export const registerSenderId = async (req, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const { senderName, purpose } = req.body;
+
+    if (!senderName || !purpose) {
+      return res.status(400).json({ error: 'Sender name and purpose are required' });
+    }
+
+    // Call BMS service
+    const result = await smsService.registerSenderId({ senderName, purpose });
+
+    if (!result.success) {
+      return res.status(400).json({ error: result.error });
+    }
+
+    // Save to organization
+    const organization = await Organization.findById(organizationId);
+    if (organization) {
+      organization.smsConfig = organization.smsConfig || {};
+      organization.smsConfig.senderId = senderName;
+      organization.smsConfig.senderIdStatus = 'pending';
+      organization.smsConfig.senderIdPurpose = purpose;
+      organization.smsConfig.senderIdRegisteredAt = new Date();
+      await organization.save();
+    }
+
+    res.json({
+      success: true,
+      message: 'Sender ID registered successfully',
+      senderName,
+      status: result.status,
+      purpose
+    });
+  } catch (error) {
+    console.error('Register sender ID error:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Check Sender ID Status
+export const checkSenderIdStatus = async (req, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const { senderName } = req.body;
+
+    const organization = await Organization.findById(organizationId);
+    const nameToCheck = senderName || organization?.smsConfig?.senderId;
+
+    if (!nameToCheck) {
+      return res.status(400).json({ error: 'Sender name is required or organization has no registered sender ID' });
+    }
+
+    // Call BMS service
+    const result = await smsService.checkSenderIdStatus({ senderName: nameToCheck });
+
+    if (!result.success) {
+      return res.status(400).json({ error: result.error });
+    }
+
+    // Update organization with live status from BMS
+    if (organization) {
+      organization.smsConfig = organization.smsConfig || {};
+      organization.smsConfig.senderId = nameToCheck;
+      organization.smsConfig.senderIdStatus = result.status.toLowerCase();
+      await organization.save();
+    }
+
+    res.json({
+      success: true,
+      senderName: nameToCheck,
+      status: result.status,
+      organizationUpdated: !!organization
+    });
+  } catch (error) {
+    console.error('Check sender ID status error:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Get system SMS configuration
+export const getSystemConfig = async (req, res) => {
+  try {
+    res.json({
+      defaultSenderId: process.env.BMS_SENDER_ID || 'Sanctuary'
+    });
+  } catch (error) {
+    console.error('Get system config error:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Get available SMS packages (for churches to browse)
+export const getSmsPackages = async (req, res) => {
+  try {
+    const packages = await SmsPackage.find({ isActive: true }).sort({ credits: 1 }).lean();
+    res.json({ packages });
+  } catch (error) {
+    console.error('Get SMS packages error:', error);
     res.status(500).json({ error: error.message });
   }
 };

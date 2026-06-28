@@ -7,10 +7,9 @@ import logger from '../utils/logger.js';
 
 class SMSService {
   constructor() {
-    this.baseUrl = 'https://smsc.hubtel.com/v1/messages/send';
-    this.clientId = process.env.HUBTEL_CLIENT_ID;
-    this.clientSecret = process.env.HUBTEL_CLIENT_SECRET;
-    this.senderId = process.env.HUBTEL_SENDER_ID || 'ZIONHILL';
+    this.baseUrl = 'https://api.mnotify.com/api';
+    this.apiKey = process.env.BMS_API_KEY;
+    this.senderId = process.env.BMS_SENDER_ID || 'Sanctuary';
   }
 
   /**
@@ -127,10 +126,19 @@ class SMSService {
    * Process template with member-specific variables
    */
   async processTemplateForMember(template, member, merchant, additionalVars = {}) {
+    // Calculate age from dateOfBirth if available
+    let age = '';
+    if (member.dateOfBirth) {
+      const birthDate = new Date(member.dateOfBirth);
+      const today = new Date();
+      age = (today.getFullYear() - birthDate.getFullYear()).toString();
+    }
+
     const variables = {
       firstName: member.firstName || '',
       lastName: member.lastName || '',
       fullName: `${member.firstName || ''} ${member.lastName || ''}`.trim(),
+      age: age, // ✅ NEW: Support {{age}} template variable
       churchName: merchant?.churchName || '',
       churchPhone: merchant?.phone || '',
       churchEmail: merchant?.email || '',
@@ -176,16 +184,16 @@ class SMSService {
   }
 
   /**
-   * Validate Hubtel credentials
+   * Validate BMS credentials
    */
   validateCredentials() {
-    if (!this.clientId || !this.clientSecret) {
-      throw new Error('Hubtel credentials not configured. Please set HUBTEL_CLIENT_ID and HUBTEL_CLIENT_SECRET in .env');
+    if (!this.apiKey) {
+      throw new Error('BMS API key not configured. Please set BMS_API_KEY in .env');
     }
   }
 
   /**
-   * Send SMS to single recipient via Hubtel
+   * Send SMS to single recipient via BMS Africa
    */
   async sendSingle({
     phone,
@@ -194,36 +202,17 @@ class SMSService {
     userId,
     category = 'general',
     templateId = null,
-    metadata = {},
-    clientId = null,              // ✅ NEW - optional merchant-specific credentials
-    clientSecret = null,          // ✅ NEW - optional merchant-specific credentials
-    usePlatformCredentials = false // ✅ NEW - force platform credentials for super admin
+    metadata = {}
   }) {
     try {
-      // ✅ NEW: Use merchant credentials if provided, otherwise use platform credentials
-      const effectiveClientId = clientId || this.clientId;
-      const effectiveClientSecret = clientSecret || this.clientSecret;
-
-      // ✅ DEBUG: Log which credentials are being used
-      if (usePlatformCredentials) {
-        logger.info(`🔐 [SUPER ADMIN] Using platform Hubtel credentials (clientId: ${this.clientId.substring(0, 4)}...)`);
-      } else if (clientId && clientSecret) {
-        logger.info(`🔐 [MERCHANT CREDENTIALS] Using merchant's Hubtel credentials (clientId: ${clientId.substring(0, 4)}...)`);
-      } else {
-        logger.info(`🔐 [PLATFORM CREDENTIALS] Using platform Hubtel credentials (clientId: ${this.clientId.substring(0, 4)}...)`);
-      }
-
-      if (!effectiveClientId || !effectiveClientSecret) {
-        throw new Error('SMS credentials not configured. Please set HUBTEL_CLIENT_ID and HUBTEL_CLIENT_SECRET in .env');
-      }
+      this.validateCredentials();
 
       // Validate phone number exists
       if (!phone || typeof phone !== 'string') {
         throw new Error(`Invalid phone number: ${phone}. Phone number must be a non-empty string.`);
       }
 
-      // ✅ For super admin, always use platform sender ID
-      const senderId = usePlatformCredentials ? this.senderId : await this.getSenderId(merchantId);
+      const senderId = await this.getSenderId(merchantId);
       const formattedPhone = this.formatPhoneNumber(phone);
 
       // Validate formatted phone
@@ -261,52 +250,36 @@ class SMSService {
         metadata: metadata
       });
 
-      logger.info(`📤 Sending SMS to ${formattedPhone} via Hubtel using Sender-ID: "${senderId}"`);
+      logger.info(`📤 Sending SMS to ${formattedPhone} via BMS Africa using Sender-ID: "${senderId}"`);
 
-      // ✅ GET request with query parameters using effective credentials
-      const url = `${this.baseUrl}?clientid=${encodeURIComponent(effectiveClientId)}&clientsecret=${encodeURIComponent(effectiveClientSecret)}&from=${encodeURIComponent(senderId)}&to=${encodeURIComponent(formattedPhone)}&content=${encodeURIComponent(message)}&registereddelivery=true`;
-
-      logger.info(`📋 SMS Request - Sender-ID: ${senderId}, Recipient: ${formattedPhone}`);
-
-      // Send via Hubtel
-      const response = await axios.get(url, {
-        timeout: 30000
+      // Send via BMS Africa
+      const response = await axios.post(`${this.baseUrl}/sms/quick?key=${encodeURIComponent(this.apiKey)}`, {
+        recipient: [formattedPhone],
+        sender: senderId,
+        message,
+        is_schedule: false,
+        schedule_date: ""
+      }, {
+        timeout: 30000,
+        headers: { 'Content-Type': 'application/json' }
       });
 
-      logger.info(`Hubtel response: ${JSON.stringify(response.data)}`);
+      logger.info(`BMS response: ${JSON.stringify(response.data)}`);
 
-      /**
-       * ✅ HUBTEL ACTUAL RESPONSE FORMAT:
-       * {
-       *   "rate": 0.05,
-       *   "messageId": "7cefbe53-2768-47ed-9aa0-e433b387bebd",
-       *   "status": 0,  // ✅ Number 0 = success (lowercase 's')
-       *   "statusDescription": null,
-       *   "networkId": ""
-       * }
-       * 
-       * Status codes:
-       * 0 = Success
-       * 1 = Invalid credentials
-       * 2 = Invalid phone number
-       * 3 = Insufficient balance
-       */
-
-      // ✅ FIXED: Use lowercase 'status' and 'messageId', check number 0
-      const statusCode = response.data?.status;
-      const isSuccess = statusCode === 0 || statusCode === "0";
-      const messageId = response.data?.messageId;
+      const isSuccess = response.data?.status === "success" && response.data?.code === "2000";
+      const campaignId = response.data?.summary?._id;
 
       if (isSuccess) {
-        // Message accepted by Hubtel
+        // Message accepted by BMS
         smsLog.recipients[0].status = 'submitted';
         smsLog.recipients[0].sentAt = new Date();
-        smsLog.recipients[0].hubtelMessageId = messageId;
+        smsLog.recipients[0].providerMessageId = campaignId;
         smsLog.recipients[0].deliveryReport = JSON.stringify({
-          messageId: messageId,
-          rate: response.data?.rate,
-          networkId: response.data?.networkId,
-          statusDescription: response.data?.statusDescription
+          campaignId,
+          totalSent: response.data?.summary?.total_sent,
+          totalRejected: response.data?.summary?.total_rejected,
+          creditUsed: response.data?.summary?.credit_used,
+          creditLeft: response.data?.summary?.credit_left
         });
         smsLog.overallStatus = 'submitted';
 
@@ -319,34 +292,11 @@ class SMSService {
           logger.info(`💳 Deducted ${creditsNeeded} credits from merchant ${merchantId}`);
         }
 
-        logger.info(`✅ SMS submitted to Hubtel. Message ID: ${messageId}`);
-
-        // ✅ START IMMEDIATE POLLING
-        try {
-          const deliveryPoller = require('./smsDeliveryPoller');
-          setImmediate(() => {
-            deliveryPoller.pollAfterSend(smsLog._id.toString())
-              .catch(error => {
-                logger.error(`Polling error for SMS ${smsLog._id}: ${error.message}`);
-              });
-          });
-          logger.info(`🔄 Started immediate delivery tracking for SMS ${smsLog._id}`);
-        } catch (pollerError) {
-          logger.warn(`⚠️  Poller not available: ${pollerError.message}`);
-        }
+        logger.info(`✅ SMS submitted to BMS. Campaign ID: ${campaignId}`);
 
       } else {
         // Message rejected
-        const errorMessages = {
-          1: 'Invalid Hubtel credentials',
-          2: 'Invalid phone number format',
-          3: 'Insufficient Hubtel account balance',
-          4: 'Invalid sender ID or not registered'
-        };
-
-        const errorMessage = errorMessages[statusCode] ||
-          response.data?.statusDescription ||
-          `Hubtel error (status: ${statusCode})`;
+        const errorMessage = response.data?.message || `BMS error (status: ${response.data?.status})`;
 
         smsLog.recipients[0].status = 'failed';
         smsLog.recipients[0].failureReason = errorMessage;
@@ -354,14 +304,14 @@ class SMSService {
         smsLog.failedDeliveries = 1;
         smsLog.errors.push({
           message: errorMessage,
-          code: statusCode,
+          code: response.data?.code,
           timestamp: new Date(),
           response: JSON.stringify(response.data)
         });
 
         await smsLog.save();
 
-        logger.error(`❌ SMS rejected by Hubtel: ${errorMessage}`);
+        logger.error(`❌ SMS rejected by BMS: ${errorMessage}`);
       }
 
       return {
@@ -369,27 +319,27 @@ class SMSService {
         smsLog: smsLog,
         creditsUsed: isSuccess ? creditsNeeded : 0,
         status: isSuccess ? 'submitted' : 'failed',
-        messageId: messageId,
+        campaignId: campaignId,
         providerResponse: response.data
       };
 
     } catch (error) {
-      logger.error(`❌ Hubtel SMS send error: ${error.message}`);
+      logger.error(`❌ BMS SMS send error: ${error.message}`);
 
       // Handle specific HTTP errors
       if (error.response) {
         const status = error.response.status;
         const errorData = error.response.data;
 
-        logger.error(`Hubtel API Error (${status}): ${JSON.stringify(errorData)}`);
+        logger.error(`BMS API Error (${status}): ${JSON.stringify(errorData)}`);
 
         if (status === 401 || status === 403) {
-          throw new Error('Hubtel authentication failed. Please check HUBTEL_CLIENT_ID and HUBTEL_CLIENT_SECRET.');
+          throw new Error('BMS authentication failed. Please check BMS_API_KEY in .env');
         } else if (status === 400) {
-          throw new Error(`Invalid request: ${errorData?.Message || 'Check phone number and message content'}`);
+          throw new Error(`Invalid request: ${errorData?.message || 'Check phone number and message content'}`);
         }
 
-        throw new Error(errorData?.Message || error.message);
+        throw new Error(errorData?.message || error.message);
       }
 
       throw error;
@@ -455,63 +405,44 @@ class SMSService {
         metadata: { ...metadata, isFreeMessage: true }
       });
 
-      logger.info(`📤 Sending FREE SMS to ${formattedPhone} via Hubtel (no credits charged)...`);
+      logger.info(`📤 Sending FREE SMS to ${formattedPhone} via BMS Africa (no credits charged)...`);
 
-      // ✅ GET request with query parameters
-      const url = `${this.baseUrl}?clientid=${encodeURIComponent(this.clientId)}&clientsecret=${encodeURIComponent(this.clientSecret)}&from=${encodeURIComponent(senderId)}&to=${encodeURIComponent(formattedPhone)}&content=${encodeURIComponent(message)}&registereddelivery=true`;
-
-      // Send via Hubtel
-      const response = await axios.get(url, {
-        timeout: 30000
+      // Send via BMS Africa
+      const response = await axios.post(`${this.baseUrl}/sms/quick?key=${encodeURIComponent(this.apiKey)}`, {
+        recipient: [formattedPhone],
+        sender: senderId,
+        message,
+        is_schedule: false,
+        schedule_date: ""
+      }, {
+        timeout: 30000,
+        headers: { 'Content-Type': 'application/json' }
       });
 
-      const statusCode = response.data?.status;
-      const isSuccess = statusCode === 0 || statusCode === "0";
-      const messageId = response.data?.messageId;
+      const isSuccess = response.data?.status === "success" && response.data?.code === "2000";
+      const campaignId = response.data?.summary?._id;
 
       if (isSuccess) {
-        // Message accepted by Hubtel
+        // Message accepted by BMS
         smsLog.recipients[0].status = 'submitted';
         smsLog.recipients[0].sentAt = new Date();
-        smsLog.recipients[0].hubtelMessageId = messageId;
+        smsLog.recipients[0].providerMessageId = campaignId;
         smsLog.recipients[0].deliveryReport = JSON.stringify({
-          messageId: messageId,
-          rate: response.data?.rate,
-          networkId: response.data?.networkId,
-          statusDescription: response.data?.statusDescription
+          campaignId,
+          totalSent: response.data?.summary?.total_sent,
+          totalRejected: response.data?.summary?.total_rejected,
+          creditUsed: response.data?.summary?.credit_used,
+          creditLeft: response.data?.summary?.credit_left
         });
         smsLog.overallStatus = 'submitted';
 
         await smsLog.save();
 
-        logger.info(`✅ FREE SMS submitted to Hubtel. Message ID: ${messageId}`);
-
-        // START IMMEDIATE POLLING
-        try {
-          const deliveryPoller = require('./smsDeliveryPoller');
-          setImmediate(() => {
-            deliveryPoller.pollAfterSend(smsLog._id.toString())
-              .catch(error => {
-                logger.error(`Polling error for FREE SMS ${smsLog._id}: ${error.message}`);
-              });
-          });
-          logger.info(`🔄 Started immediate delivery tracking for FREE SMS ${smsLog._id}`);
-        } catch (pollerError) {
-          logger.warn(`⚠️  Poller not available: ${pollerError.message}`);
-        }
+        logger.info(`✅ FREE SMS submitted to BMS. Campaign ID: ${campaignId}`);
 
       } else {
         // Message rejected
-        const errorMessages = {
-          1: 'Invalid Hubtel credentials',
-          2: 'Invalid phone number format',
-          3: 'Insufficient Hubtel account balance',
-          4: 'Invalid sender ID or not registered'
-        };
-
-        const errorMessage = errorMessages[statusCode] ||
-          response.data?.statusDescription ||
-          `Hubtel error (status: ${statusCode})`;
+        const errorMessage = response.data?.message || `BMS error (status: ${response.data?.status})`;
 
         smsLog.recipients[0].status = 'failed';
         smsLog.recipients[0].failureReason = errorMessage;
@@ -519,14 +450,14 @@ class SMSService {
         smsLog.failedDeliveries = 1;
         smsLog.errors.push({
           message: errorMessage,
-          code: statusCode,
+          code: response.data?.code,
           timestamp: new Date(),
           response: JSON.stringify(response.data)
         });
 
         await smsLog.save();
 
-        logger.error(`❌ FREE SMS rejected by Hubtel: ${errorMessage}`);
+        logger.error(`❌ FREE SMS rejected by BMS: ${errorMessage}`);
       }
 
       return {
@@ -534,27 +465,27 @@ class SMSService {
         smsLog: smsLog,
         creditsUsed: 0, // Always 0 for free messages
         status: isSuccess ? 'submitted' : 'failed',
-        messageId: messageId,
+        campaignId: campaignId,
         providerResponse: response.data
       };
 
     } catch (error) {
-      logger.error(`❌ Hubtel FREE SMS send error: ${error.message}`);
+      logger.error(`❌ BMS FREE SMS send error: ${error.message}`);
 
       // Handle specific HTTP errors
       if (error.response) {
         const status = error.response.status;
         const errorData = error.response.data;
 
-        logger.error(`Hubtel API Error (${status}): ${JSON.stringify(errorData)}`);
+        logger.error(`BMS API Error (${status}): ${JSON.stringify(errorData)}`);
 
         if (status === 401 || status === 403) {
-          throw new Error('Hubtel authentication failed. Please check HUBTEL_CLIENT_ID and HUBTEL_CLIENT_SECRET.');
+          throw new Error('BMS authentication failed. Please check BMS_API_KEY in .env');
         } else if (status === 400) {
-          throw new Error(`Invalid request: ${errorData?.Message || 'Check phone number and message content'}`);
+          throw new Error(`Invalid request: ${errorData?.message || 'Check phone number and message content'}`);
         }
 
-        throw new Error(errorData?.Message || error.message);
+        throw new Error(errorData?.message || error.message);
       }
 
       throw error;
@@ -562,7 +493,7 @@ class SMSService {
   }
 
   /**
-   * Send bulk SMS via Hubtel
+   * Send bulk SMS via BMS Africa (single request for all recipients)
    */
   async sendBulk({
     phones,
@@ -571,22 +502,9 @@ class SMSService {
     userId,
     category = 'general',
     templateId = null,
-    metadata = {},
-    clientId = null,      // ✅ NEW - optional merchant-specific credentials
-    clientSecret = null   // ✅ NEW - optional merchant-specific credentials
+    metadata = {}
   }) {
     try {
-      // ✅ NEW: Use merchant credentials if provided, otherwise use platform credentials
-      const effectiveClientId = clientId || this.clientId;
-      const effectiveClientSecret = clientSecret || this.clientSecret;
-
-      // ✅ DEBUG: Log which credentials are being used
-      if (clientId && clientSecret) {
-        logger.info(`🔐 [MERCHANT CREDENTIALS] Using merchant's Hubtel credentials for bulk SMS (clientId: ${clientId.substring(0, 4)}...)`);
-      } else {
-        logger.info(`🔐 [PLATFORM CREDENTIALS] Using platform Hubtel credentials for bulk SMS (clientId: ${this.clientId.substring(0, 4)}...)`);
-      }
-
       this.validateCredentials();
 
       if (!phones || !Array.isArray(phones) || phones.length === 0) {
@@ -600,31 +518,19 @@ class SMSService {
       const senderId = await this.getSenderId(merchantId);
       const formattedPhones = phones.map(p => this.formatPhoneNumber(p));
 
-      // ⚠️ IMPORTANT: Only remove duplicates if we DON'T have personalization data
-      // If we have personalization data, each phone MUST correspond to its metadata (firstName, lastName)
+      // Only remove duplicates if we DON'T have personalization data
       const hasMetadataWithNames = metadata.firstNames && metadata.lastNames &&
         Array.isArray(metadata.firstNames) &&
         Array.isArray(metadata.lastNames);
 
-      // If we have personalization data, keep all phones as-is to maintain 1:1 correspondence with metadata
       const uniquePhones = hasMetadataWithNames ? formattedPhones : [...new Set(formattedPhones)];
 
-      logger.info(`📤 Bulk SMS to ${uniquePhones.length} recipients via Hubtel using Sender-ID: "${senderId}"`);
+      logger.info(`📤 Bulk SMS to ${uniquePhones.length} recipients via BMS Africa using Sender-ID: "${senderId}"`);
       logger.info(`   Deduplicated: ${!hasMetadataWithNames} (keeping personalization correspondence)`);
 
       // Get merchant name for variable substitution
       const merchant = await Organization.findById(merchantId);
       const merchantName = merchant?.churchName || 'our church';
-
-      // Debug logging for metadata
-      logger.info(`📦 Metadata received:`, {
-        hasFirstNames: !!metadata.firstNames,
-        firstNamesLength: metadata.firstNames?.length,
-        hasLastNames: !!metadata.lastNames,
-        lastNamesLength: metadata.lastNames?.length,
-        uniquePhonesLength: uniquePhones.length,
-        hasMetadataWithNames: hasMetadataWithNames
-      });
 
       // Check if we have personalization data
       const hasPersonalization = metadata.firstNames && metadata.lastNames &&
@@ -633,12 +539,8 @@ class SMSService {
         metadata.lastNames.length === uniquePhones.length;
 
       logger.info(`🎯 Has personalization: ${hasPersonalization}`);
-      if (hasPersonalization) {
-        logger.info(`   First names: ${metadata.firstNames.join(', ')}`);
-        logger.info(`   Last names: ${metadata.lastNames.join(', ')}`);
-      }
 
-      // Build personalized messages for each recipient if we have their data
+      // Build personalized messages
       const personalizedMessages = [];
       if (hasPersonalization) {
         logger.info(`📝 Building personalized messages for ${uniquePhones.length} recipients`);
@@ -648,7 +550,6 @@ class SMSService {
             lastName: metadata.lastNames[i] || '',
             churchName: merchantName
           };
-          logger.info(`  Recipient ${i + 1}: ${variables.firstName} ${variables.lastName}`);
           const personalizedMsg = this.processTemplateVariables(message, variables);
           personalizedMessages.push({
             phone: uniquePhones[i],
@@ -656,11 +557,8 @@ class SMSService {
           });
         }
       } else {
-        logger.info(`📋 No personalization data - using standard template variables only`);
-        // Process template variables with only churchName
-        const baseVariables = {
-          churchName: merchantName
-        };
+        logger.info(`📋 No personalization data - using standard template`);
+        const baseVariables = { churchName: merchantName };
         const processedMessage = this.processTemplateVariables(message, baseVariables);
         for (let i = 0; i < uniquePhones.length; i++) {
           personalizedMessages.push({
@@ -687,118 +585,78 @@ class SMSService {
         memberId: metadata.memberIds?.[index] || null
       }));
 
-      // Create SMS log (store the template message, not personalized ones)
+      // Create SMS log
       const smsLog = await SmsLog.create({
         merchantId,
         sentBy: userId,
         messageType: 'bulk',
         category,
         recipients,
-        message: message,  // Store original template for reference
+        message: message,
         senderID: senderId,
         templateUsed: templateId,
         creditsUsed: creditsNeeded,
-        overallStatus: 'processing',
+        overallStatus: 'submitted',
         totalRecipients: uniquePhones.length,
         metadata: metadata,
         isPersonalized: hasPersonalization
       });
 
-      logger.info(`Created SMS log ${smsLog._id} for ${uniquePhones.length} recipients (personalized: ${hasPersonalization})`);
+      logger.info(`Created SMS log ${smsLog._id} for ${uniquePhones.length} recipients`);
 
       try {
-        // Send in batches of 50 (to avoid rate limiting)
-        const batchSize = 50;
-        const batches = [];
+        // BMS Africa handles all recipients in ONE request
+        logger.info(`📤 Sending ALL ${uniquePhones.length} recipients in single BMS request...`);
 
-        for (let i = 0; i < uniquePhones.length; i += batchSize) {
-          batches.push(uniquePhones.slice(i, i + batchSize));
-        }
+        const response = await axios.post(`${this.baseUrl}/sms/quick?key=${encodeURIComponent(this.apiKey)}`, {
+          recipient: uniquePhones,
+          sender: senderId,
+          message: personalizedMessages[0].message, // BMS doesn't support per-recipient personalization in one request
+          is_schedule: false,
+          schedule_date: ""
+        }, {
+          timeout: 30000,
+          headers: { 'Content-Type': 'application/json' }
+        });
 
-        logger.info(`📦 Splitting into ${batches.length} batches of ${batchSize}`);
+        logger.info(`BMS response: ${JSON.stringify(response.data)}`);
 
-        let successCount = 0;
-        let failCount = 0;
+        const isSuccess = response.data?.status === "success" && response.data?.code === "2000";
+        const campaignId = response.data?.summary?._id;
+        const successCount = response.data?.summary?.total_sent || 0;
+        const failCount = response.data?.summary?.total_rejected || 0;
 
-        // Process batches sequentially
-        for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
-          const batch = batches[batchIndex];
-          logger.info(`📤 Processing batch ${batchIndex + 1}/${batches.length} (${batch.length} recipients)...`);
+        if (isSuccess) {
+          // Update log with BMS results
+          smsLog.bmscampaignId = campaignId;
+          smsLog.successfulDeliveries = successCount;
+          smsLog.failedDeliveries = failCount;
 
-          // Send all messages in this batch in parallel
-          const sendPromises = batch.map(async (phone, index) => {
-            const globalIndex = batchIndex * batchSize + index;
-            const personalizedMsg = personalizedMessages[globalIndex]?.message || personalizedMessages[0].message;
+          // Mark all submitted recipients
+          for (let i = 0; i < successCount && i < smsLog.recipients.length; i++) {
+            smsLog.recipients[i].status = 'submitted';
+            smsLog.recipients[i].sentAt = new Date();
+            smsLog.recipients[i].providerMessageId = campaignId;
+            smsLog.recipients[i].deliveryReport = JSON.stringify({
+              campaignId,
+              totalSent: successCount,
+              totalRejected: failCount,
+              creditUsed: response.data?.summary?.credit_used,
+              creditLeft: response.data?.summary?.credit_left
+            });
+          }
 
-            try {
-              // ✅ GET request with query parameters using effective credentials
-              const url = `${this.baseUrl}?clientid=${encodeURIComponent(effectiveClientId)}&clientsecret=${encodeURIComponent(effectiveClientSecret)}&from=${encodeURIComponent(senderId)}&to=${encodeURIComponent(phone)}&content=${encodeURIComponent(personalizedMsg)}&registereddelivery=true`;
+          // Mark failed recipients
+          for (let i = successCount; i < smsLog.recipients.length; i++) {
+            smsLog.recipients[i].status = 'failed';
+            smsLog.recipients[i].failureReason = 'Rejected by BMS';
+          }
 
-              const response = await axios.get(url, {
-                timeout: 30000
-              });
+          smsLog.overallStatus = failCount === 0 ? 'submitted' : (successCount === 0 ? 'failed' : 'partial');
 
-              // ✅ FIXED: Use lowercase 'status' and 'messageId'
-              const isSuccess = response.data?.status === 0 || response.data?.status === "0";
-
-              return {
-                phone,
-                index: globalIndex,
-                success: isSuccess,
-                messageId: response.data?.messageId,
-                response: response.data
-              };
-            } catch (error) {
-              logger.error(`Failed to send to ${phone}: ${error.message}`);
-              return {
-                phone,
-                index: globalIndex,
-                success: false,
-                error: error.response?.data?.Message || error.message
-              };
-            }
-          });
-
-          // Wait for this batch to complete
-          const batchResults = await Promise.all(sendPromises);
-
-          // Update recipients based on results
-          batchResults.forEach(result => {
-            const recipient = smsLog.recipients[result.index];
-
-            if (result.success) {
-              recipient.status = 'submitted';
-              recipient.sentAt = new Date();
-              recipient.hubtelMessageId = result.messageId;
-              recipient.deliveryReport = JSON.stringify(result.response);
-              successCount++;
-            } else {
-              recipient.status = 'failed';
-              recipient.failureReason = result.error || 'Send failed';
-              failCount++;
-            }
-          });
-
-          // Save progress after each batch
           await smsLog.save();
 
-          // Small delay between batches to avoid rate limiting
-          if (batchIndex < batches.length - 1) {
-            await new Promise(resolve => setTimeout(resolve, 2000)); // 2 second delay
-          }
-        }
-
-        // Update overall status
-        if (successCount === uniquePhones.length) {
-          smsLog.overallStatus = 'submitted';
-        } else if (failCount === uniquePhones.length) {
-          smsLog.overallStatus = 'failed';
-        } else {
-          smsLog.overallStatus = 'partial';
-        }
-
-        // Deduct credits only for successful sends
-        if (successCount > 0) {
+          // Deduct credits for successful sends
           const actualCreditsUsed = this.calculateCredits(message, successCount);
           const smsCredit = await SmsCredit.findOne({ merchantId });
           if (smsCredit) {
@@ -807,47 +665,52 @@ class SMSService {
           }
 
           smsLog.creditsUsed = actualCreditsUsed;
-        }
+          await smsLog.save();
 
-        await smsLog.save();
+          logger.info(`✅ Bulk SMS completed: ${successCount} sent, ${failCount} rejected`);
 
-        logger.info(`✅ Bulk SMS completed: ${successCount} succeeded, ${failCount} failed`);
+        } else {
+          // BMS request failed
+          const errorMessage = response.data?.message || `BMS error (status: ${response.data?.status})`;
 
-        // ✅ START IMMEDIATE POLLING
-        try {
-          const deliveryPoller = require('./smsDeliveryPoller');
-          setImmediate(() => {
-            deliveryPoller.pollAfterSend(smsLog._id.toString())
-              .catch(error => {
-                logger.error(`Polling error for bulk SMS ${smsLog._id}: ${error.message}`);
-              });
+          smsLog.recipients.forEach(recipient => {
+            recipient.status = 'failed';
+            recipient.failureReason = errorMessage;
           });
-          logger.info(`🔄 Started immediate delivery tracking for bulk SMS ${smsLog._id}`);
-        } catch (pollerError) {
-          logger.warn(`⚠️  Poller not available: ${pollerError.message}`);
+
+          smsLog.overallStatus = 'failed';
+          smsLog.failedDeliveries = uniquePhones.length;
+          smsLog.errors.push({
+            message: errorMessage,
+            code: response.data?.code,
+            timestamp: new Date(),
+            response: JSON.stringify(response.data)
+          });
+
+          await smsLog.save();
+          logger.error(`❌ BMS bulk SMS rejected: ${errorMessage}`);
         }
 
         return {
-          success: successCount > 0,
+          success: isSuccess,
           smsLog: smsLog,
           recipientCount: uniquePhones.length,
-          successCount: successCount,
-          failCount: failCount,
+          successCount: successCount || 0,
+          failCount: failCount || 0,
           creditsUsed: smsLog.creditsUsed,
           status: smsLog.overallStatus
         };
 
       } catch (apiError) {
-        logger.error(`Hubtel bulk API error: ${apiError.message}`);
+        logger.error(`BMS bulk API error: ${apiError.message}`);
 
         smsLog.recipients.forEach(recipient => {
-          if (recipient.status === 'pending') {
-            recipient.status = 'failed';
-            recipient.failureReason = `API Error: ${apiError.message}`;
-          }
+          recipient.status = 'failed';
+          recipient.failureReason = `API Error: ${apiError.message}`;
         });
 
         smsLog.overallStatus = 'failed';
+        smsLog.failedDeliveries = uniquePhones.length;
         smsLog.errors.push({
           message: `API Error: ${apiError.message}`,
           timestamp: new Date()
@@ -858,7 +721,7 @@ class SMSService {
       }
 
     } catch (error) {
-      logger.error(`❌ Hubtel bulk SMS send error: ${error.message}`);
+      logger.error(`❌ BMS bulk SMS send error: ${error.message}`);
       throw error;
     }
   }
@@ -1242,8 +1105,113 @@ class SMSService {
   }
 
   /**
-   * Check Hubtel account balance
-   * Note: Balance check may use different endpoint
+   * Register a Sender ID with BMS Africa
+   */
+  async registerSenderId({ senderName, purpose }) {
+    try {
+      this.validateCredentials();
+
+      if (!senderName || senderName.length === 0 || senderName.length > 11) {
+        throw new Error('Sender ID must be 1-11 characters');
+      }
+
+      if (!purpose || purpose.length === 0) {
+        throw new Error('Purpose is required');
+      }
+
+      logger.info(`📋 Registering Sender ID "${senderName}" with BMS Africa...`);
+
+      const response = await axios.post(`${this.baseUrl}/senderid/register?key=${encodeURIComponent(this.apiKey)}`, {
+        sender_name: senderName,
+        purpose
+      }, {
+        timeout: 30000,
+        headers: { 'Content-Type': 'application/json' }
+      });
+
+      logger.info(`BMS Sender ID registration response: ${JSON.stringify(response.data)}`);
+
+      const isSuccess = response.data?.status === "success" && response.data?.code === "2000";
+
+      if (isSuccess) {
+        logger.info(`✅ Sender ID "${senderName}" registered successfully. Status: ${response.data?.summary?.status}`);
+        return {
+          success: true,
+          senderName,
+          status: response.data?.summary?.status,
+          purpose: response.data?.summary?.purpose
+        };
+      } else {
+        const errorMessage = response.data?.message || `BMS error (status: ${response.data?.status})`;
+        logger.error(`❌ Sender ID registration failed: ${errorMessage}`);
+        return {
+          success: false,
+          error: errorMessage
+        };
+      }
+
+    } catch (error) {
+      logger.error(`❌ Sender ID registration error: ${error.message}`);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * Check the approval status of a Sender ID with BMS Africa
+   */
+  async checkSenderIdStatus({ senderName }) {
+    try {
+      this.validateCredentials();
+
+      if (!senderName || senderName.length === 0) {
+        throw new Error('Sender name is required');
+      }
+
+      logger.info(`🔍 Checking Sender ID status for "${senderName}"...`);
+
+      const response = await axios.post(`${this.baseUrl}/senderid/status?key=${encodeURIComponent(this.apiKey)}`, {
+        sender_name: senderName
+      }, {
+        timeout: 30000,
+        headers: { 'Content-Type': 'application/json' }
+      });
+
+      logger.info(`BMS Sender ID status response: ${JSON.stringify(response.data)}`);
+
+      const isSuccess = response.data?.status === "success" && response.data?.code === "2000";
+
+      if (isSuccess) {
+        const status = response.data?.summary?.status;
+        logger.info(`✅ Sender ID "${senderName}" status: ${status}`);
+        return {
+          success: true,
+          senderName,
+          status: status // "Pending", "Approved", or "Rejected"
+        };
+      } else {
+        const errorMessage = response.data?.message || `BMS error (status: ${response.data?.status})`;
+        logger.error(`❌ Sender ID status check failed: ${errorMessage}`);
+        return {
+          success: false,
+          error: errorMessage
+        };
+      }
+
+    } catch (error) {
+      logger.error(`❌ Sender ID status check error: ${error.message}`);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * Check account balance with BMS Africa
+   * Note: BMS returns credit_left in SMS responses
    */
   async checkBalance() {
     try {
@@ -1400,6 +1368,88 @@ class SMSService {
     } catch (error) {
       logger.error(`Update delivery statuses error: ${error.message}`);
       throw error;
+    }
+  }
+
+  /**
+   * Send shepherd alert SMS to notify leaders about member absences
+   * @param {string} shepherdPhone - Shepherd's phone number
+   * @param {string} memberName - Name of absent member
+   * @param {number} absenceCount - Number of absences
+   * @param {number} lookbackDays - Period in days
+   * @param {string} merchantId - Organization ID
+   * @returns {Promise<Object>} Send result
+   */
+  async sendShepherdAlertSms(shepherdPhone, memberName, absenceCount, lookbackDays, merchantId) {
+    try {
+      const senderIdToUse = await this.getSenderId(merchantId);
+      const formattedPhone = this.formatPhoneNumber(shepherdPhone);
+
+      // Generate alert message
+      const message = `⚠️ Attendance Alert: ${memberName} has been absent ${absenceCount} times in the last ${lookbackDays} days.`;
+
+      // Check credits
+      const credits = this.calculateCredits(message, 1);
+      const smsCredit = await SmsCredit.getOrCreate(merchantId);
+
+      if (smsCredit.balance < credits) {
+        return {
+          success: false,
+          error: 'Insufficient SMS credits',
+          creditsNeeded: credits,
+          creditsAvailable: smsCredit.balance
+        };
+      }
+
+      // Send via BMS
+      const response = await axios.post(
+        `${this.baseUrl}/sms/quick?key=${this.apiKey}`,
+        {
+          recipient: [formattedPhone],
+          sender: senderIdToUse,
+          message: message,
+          is_schedule: false
+        },
+        { timeout: 10000 }
+      );
+
+      if (response.data.status === 'success' && response.data.code === '2000') {
+        // Deduct credits
+        await smsCredit.deductCredits(credits);
+
+        // Log the SMS
+        const smsLog = new SmsLog({
+          organizationId: merchantId,
+          category: 'shepherd_alert',
+          senderId: senderIdToUse,
+          recipients: [{
+            phone: formattedPhone,
+            status: 'sent',
+            providerMessageId: response.data.summary._id
+          }],
+          message,
+          creditsCost: credits,
+          overallStatus: 'sent'
+        });
+        await smsLog.save();
+
+        return {
+          success: true,
+          reference: response.data.summary._id,
+          creditUsed: credits
+        };
+      } else {
+        return {
+          success: false,
+          error: response.data.message || 'Failed to send SMS'
+        };
+      }
+    } catch (error) {
+      logger.error(`Send shepherd alert SMS error: ${error.message}`);
+      return {
+        success: false,
+        error: error.message
+      };
     }
   }
 

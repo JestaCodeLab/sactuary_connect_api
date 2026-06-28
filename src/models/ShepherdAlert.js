@@ -1,14 +1,8 @@
 import mongoose from 'mongoose';
 
 /**
- * ShepherdAlert Model
- * Defines rules for automated attendance monitoring and SMS alerts
- * 
- * Features:
- * - Monitor member attendance for specific events
- * - Configurable absence threshold (default: 3)
- * - Multiple shepherd recipients per alert
- * - Track absences per member per event
+ * ShepherdAlert Model (Simplified)
+ * Monitors ALL organization members for attendance and sends alerts to shepherds when thresholds are exceeded
  */
 
 const shepherdAlertSchema = new mongoose.Schema(
@@ -21,30 +15,20 @@ const shepherdAlertSchema = new mongoose.Schema(
     branchId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Branch',
-      required: false, // Can be organization-wide if not set
     },
+    // Alert name
     name: {
       type: String,
       required: true,
       trim: true,
     },
-    description: {
-      type: String,
-      default: '',
-    },
+    // Is this alert active
     isActive: {
       type: Boolean,
       default: true,
     },
-    // Which events to monitor
-    monitoredEventIds: [
-      {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'Event',
-      },
-    ],
-    // SMS alert recipients (shepherds/leaders)
-    alertRecipients: [
+    // Shepherds/leaders to notify when threshold is met
+    shepherds: [
       {
         memberId: {
           type: mongoose.Schema.Types.ObjectId,
@@ -55,46 +39,23 @@ const shepherdAlertSchema = new mongoose.Schema(
           type: String,
           required: true,
         },
-        role: {
-          type: String,
-          enum: ['shepherd', 'leader', 'admin'],
-          default: 'shepherd',
-        },
       },
     ],
-    // Threshold configuration
+    // Absence threshold (e.g., 3 absences)
     absenceThreshold: {
       type: Number,
       default: 3,
       min: 1,
       max: 10,
     },
-    // Time period for counting absences (in days)
+    // Look back period in days (e.g., 30 days)
     lookbackPeriodDays: {
       type: Number,
       default: 30,
     },
-    // SMS template for alerts
-    smsTemplate: {
-      type: String,
-      default: '{memberName} has been absent from {eventName} {absenceCount} times in the past {lookbackPeriodDays} days.',
-    },
     // Last time this alert ran
     lastCheckAt: {
       type: Date,
-      default: null,
-    },
-    // Configuration for when to run checks
-    checkSchedule: {
-      type: String,
-      enum: ['daily', 'weekly', 'manual'],
-      default: 'weekly',
-    },
-    checkDayOfWeek: {
-      type: Number,
-      min: 0,
-      max: 6,
-      default: 5, // Friday
     },
     // Stats
     totalAlertsTriggered: {
@@ -113,7 +74,6 @@ const shepherdAlertSchema = new mongoose.Schema(
 
 // Index for efficient queries
 shepherdAlertSchema.index({ organizationId: 1, isActive: 1 });
-shepherdAlertSchema.index({ organizationId: 1, branchId: 1 });
 shepherdAlertSchema.index({ lastCheckAt: 1 });
 
 export default mongoose.model('ShepherdAlert', shepherdAlertSchema);

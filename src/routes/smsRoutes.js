@@ -17,7 +17,11 @@ import {
   getAvailableMembers,
   calculateSmsCost,
   updateDeliveryStatus,
-  batchUpdateDeliveryStatuses
+  batchUpdateDeliveryStatuses,
+  registerSenderId,
+  checkSenderIdStatus,
+  getSystemConfig,
+  getSmsPackages
 } from '../controllers/smsController.js';
 import {
   getTemplates,
@@ -68,6 +72,16 @@ router.post('/templates', requireFeature('sms_credits'), createTemplate);
 router.put('/templates/:id', requireFeature('sms_credits'), updateTemplate);
 router.delete('/templates/:id', requireFeature('sms_credits'), deleteTemplate);
 router.post('/templates/:id/duplicate', requireFeature('sms_credits'), duplicateTemplate);
+
+// Sender ID Management
+router.post('/sender-id/register', requireFeature('sms_credits'), registerSenderId);
+router.post('/sender-id/status', requireFeature('sms_credits'), checkSenderIdStatus);
+
+// System Configuration
+router.get('/config/system', getSystemConfig);
+
+// SMS Packages (public - no auth required for browsing)
+router.get('/packages', getSmsPackages);
 
 // Utilities
 router.get('/members/available', requireFeature('sms_credits'), getAvailableMembers);

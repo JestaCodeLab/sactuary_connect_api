@@ -39,6 +39,17 @@ const organizationSchema = new mongoose.Schema({
     type: Boolean,
     default: true,
   },
+  // SMS Sender ID configuration
+  smsConfig: {
+    senderId: String,
+    senderIdStatus: {
+      type: String,
+      enum: ['pending', 'approved', 'rejected'],
+      default: 'pending'
+    },
+    senderIdPurpose: String,
+    senderIdRegisteredAt: Date,
+  },
   // Onboarding status
   onboardingComplete: {
     type: Boolean,

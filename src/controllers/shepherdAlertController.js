@@ -1,10 +1,7 @@
 import ShepherdAlert from '../models/ShepherdAlert.js';
 import ShepherdAlertLog from '../models/ShepherdAlertLog.js';
-import Event from '../models/Event.js';
 import AttendanceRecord from '../models/AttendanceRecord.js';
 import Member from '../models/Member.js';
-import SmsCredit from '../models/SmsCredit.js';
-import Transaction from '../models/Transaction.js';
 import smsService from '../services/smsService.js';
 
 /**
@@ -20,11 +17,10 @@ export const getShepherdAlerts = async (req, res) => {
     if (isActive !== undefined) filter.isActive = isActive === 'true';
 
     const alerts = await ShepherdAlert.find(filter)
-      .populate('monitoredEventIds', 'name date')
-      .populate('alertRecipients.memberId', 'firstName lastName')
+      .populate('shepherds.memberId', 'firstName lastName phone')
       .sort({ createdAt: -1 });
 
-    res.json({ alerts });
+    res.json(alerts);
   } catch (error) {
     console.error('Error fetching shepherd alerts:', error);
     res.status(500).json({ error: error.message });
@@ -43,8 +39,7 @@ export const getShepherdAlert = async (req, res) => {
       _id: id,
       organizationId,
     })
-      .populate('monitoredEventIds', 'name date')
-      .populate('alertRecipients.memberId', 'firstName lastName phone');
+      .populate('shepherds.memberId', 'firstName lastName phone');
 
     if (!alert) {
       return res.status(404).json({ error: 'Shepherd alert not found' });
@@ -65,62 +60,47 @@ export const createShepherdAlert = async (req, res) => {
     const { organizationId } = req.user;
     const {
       name,
-      description,
-      monitoredEventIds,
-      alertRecipients,
+      shepherds,
       absenceThreshold = 3,
       lookbackPeriodDays = 30,
-      smsTemplate,
-      checkSchedule = 'weekly',
-      checkDayOfWeek = 5,
       branchId,
     } = req.body;
 
     // Validate required fields
-    if (!name) {
+    if (!name?.trim()) {
       return res.status(400).json({ error: 'Alert name is required' });
     }
 
-    if (!monitoredEventIds || monitoredEventIds.length === 0) {
-      return res.status(400).json({ error: 'At least one event must be monitored' });
-    }
-
-    if (!alertRecipients || alertRecipients.length === 0) {
-      return res.status(400).json({ error: 'At least one alert recipient is required' });
+    if (!shepherds || shepherds.length === 0) {
+      return res.status(400).json({ error: 'At least one shepherd must be notified' });
     }
 
     if (absenceThreshold < 1 || absenceThreshold > 10) {
       return res.status(400).json({ error: 'Absence threshold must be between 1 and 10' });
     }
 
-    // Verify events exist and belong to organization
-    const events = await Event.find({
-      _id: { $in: monitoredEventIds },
+    // Verify shepherd members exist
+    const shepherdMembers = await Member.find({
+      _id: { $in: shepherds.map(s => s.memberId) },
       organizationId,
     });
 
-    if (events.length !== monitoredEventIds.length) {
-      return res.status(400).json({ error: 'Some specified events do not exist' });
+    if (shepherdMembers.length !== shepherds.length) {
+      return res.status(400).json({ error: 'Some specified shepherds do not exist' });
     }
 
-    // Create alert
+    // Create alert (monitors all members)
     const alert = new ShepherdAlert({
       organizationId,
-      branchId: branchId || null,
+      branchId,
       name,
-      description,
-      monitoredEventIds,
-      alertRecipients,
+      shepherds,
       absenceThreshold,
       lookbackPeriodDays,
-      smsTemplate,
-      checkSchedule,
-      checkDayOfWeek,
     });
 
     await alert.save();
-    await alert.populate('monitoredEventIds', 'name date');
-    await alert.populate('alertRecipients.memberId', 'firstName lastName');
+    await alert.populate('shepherds.memberId', 'firstName lastName phone');
 
     res.status(201).json({ alert });
   } catch (error) {
@@ -145,15 +125,19 @@ export const updateShepherdAlert = async (req, res) => {
       }
     }
 
-    // Verify events if provided
-    if (updates.monitoredEventIds) {
-      const events = await Event.find({
-        _id: { $in: updates.monitoredEventIds },
-        organizationId,
-      });
+    // Verify shepherds if provided
+    if (updates.shepherds) {
+      const shepherdIds = updates.shepherds.map(s => s.memberId);
 
-      if (events.length !== updates.monitoredEventIds.length) {
-        return res.status(400).json({ error: 'Some specified events do not exist' });
+      if (shepherdIds.length > 0) {
+        const members = await Member.find({
+          _id: { $in: shepherdIds },
+          organizationId,
+        });
+
+        if (members.length !== shepherdIds.length) {
+          return res.status(400).json({ error: 'Some specified shepherds do not exist' });
+        }
       }
     }
 
@@ -162,8 +146,7 @@ export const updateShepherdAlert = async (req, res) => {
       updates,
       { new: true }
     )
-      .populate('monitoredEventIds', 'name date')
-      .populate('alertRecipients.memberId', 'firstName lastName');
+      .populate('shepherds.memberId', 'firstName lastName phone');
 
     if (!alert) {
       return res.status(404).json({ error: 'Shepherd alert not found' });
@@ -235,7 +218,8 @@ export const runShepherdAlertCheck = async (req, res) => {
     const alert = await ShepherdAlert.findOne({
       _id: id,
       organizationId,
-    }).populate('monitoredEventIds');
+    })
+      .populate('shepherds.memberId');
 
     if (!alert) {
       return res.status(404).json({ error: 'Shepherd alert not found' });
@@ -298,125 +282,84 @@ async function executeShepherdAlertCheck(alert, organizationId) {
   lookbackStart.setDate(lookbackStart.getDate() - alert.lookbackPeriodDays);
 
   try {
-    // Get all monitored events
-    const events = await Event.find({
-      _id: { $in: alert.monitoredEventIds },
-    });
+    // Get ALL members in the organization
+    const allMembers = await Member.find({
+      organizationId,
+    }).lean();
 
-    // For each event, check member attendance
-    for (const event of events) {
-      // Get all attendance records for this event in lookback period
-      const attendanceRecords = await AttendanceRecord.find({
-        eventId: event._id,
+    // For each member, count recent absences
+    for (const member of allMembers) {
+      // Get all events in the lookback period where this member was marked as present
+      const attendanceCount = await AttendanceRecord.countDocuments({
+        memberId: member._id,
         createdAt: { $gte: lookbackStart },
-      }).lean();
+      });
 
-      // Get all members who should have attended
-      const allMembers = await Member.find({
+      // Get all events in the lookback period (should be much larger than attendance)
+      const totalEventsInPeriod = await AttendanceRecord.countDocuments({
+        createdAt: { $gte: lookbackStart },
+      });
+
+      // Calculate absences (approximate)
+      const absenceCount = Math.max(0, totalEventsInPeriod - attendanceCount);
+
+      // Create log entry
+      const log = new ShepherdAlertLog({
         organizationId,
-      }).lean();
+        shepherdAlertId: alert._id,
+        memberId: member._id,
+        memberName: `${member.firstName} ${member.lastName}`,
+        memberPhone: member.phone,
+        absenceCount,
+        absenceThreshold: alert.absenceThreshold,
+        lookbackPeriodDays: alert.lookbackPeriodDays,
+        checkPeriodStart: lookbackStart,
+        checkPeriodEnd: new Date(),
+      });
 
-      for (const member of allMembers) {
-        // Count absences for this member at this event
-        const attendedCount = attendanceRecords.filter(
-          r => r.memberId && r.memberId.toString() === member._id.toString()
-        ).length;
+      // Check if threshold is met
+      if (absenceCount >= alert.absenceThreshold) {
+        log.triggerred = true;
 
-        const possibleCount = attendanceRecords.filter(
-          r => r.eventId.toString() === event._id.toString()
-        ).length;
-
-        const absenceCount = Math.max(0, possibleCount - attendedCount);
-
-        // Create log entry
-        const log = new ShepherdAlertLog({
-          organizationId,
-          shepherdAlertId: alert._id,
-          memberId: member._id,
-          memberName: `${member.firstName} ${member.lastName}`,
-          memberPhone: member.phone,
-          eventId: event._id,
-          eventName: event.name,
-          absenceCount,
-          absenceThreshold: alert.absenceThreshold,
-          lookbackPeriodDays: alert.lookbackPeriodDays,
-          checkPeriodStart: lookbackStart,
-          checkPeriodEnd: new Date(),
-        });
-
-        // Check if threshold is met
-        if (absenceCount >= alert.absenceThreshold) {
-          log.triggerred = true;
-
-          // Send SMS to alert recipients
+        // Send SMS to each shepherd
+        const smsResults = [];
+        for (const shepherd of alert.shepherds) {
           try {
-            const smsMessage = alert.smsTemplate
-              .replace('{memberName}', `${member.firstName} ${member.lastName}`)
-              .replace('{eventName}', event.name)
-              .replace('{absenceCount}', absenceCount)
-              .replace('{lookbackPeriodDays}', alert.lookbackPeriodDays);
+            const smsResult = await smsService.sendShepherdAlertSms(
+              shepherd.phoneNumber,
+              `${member.firstName} ${member.lastName}`,
+              absenceCount,
+              alert.lookbackPeriodDays,
+              organizationId
+            );
 
-            log.smsMessage = smsMessage;
-            log.smsAttempted = true;
+            smsResults.push({
+              memberId: shepherd.memberId,
+              phoneNumber: shepherd.phoneNumber,
+              status: smsResult.success ? 'sent' : 'failed',
+            });
 
-            // Send to each recipient
-            const smsResults = [];
-            for (const recipient of alert.alertRecipients) {
-              try {
-                const smsResult = await smsService.sendSms(recipient.phoneNumber, smsMessage, organizationId);
-                smsResults.push({
-                  memberId: recipient.memberId,
-                  phoneNumber: recipient.phoneNumber,
-                  status: smsResult.success ? 'sent' : 'failed',
-                });
-
-                if (smsResult.success) {
-                  log.smsSent = true;
-                  log.smsReference = smsResult.reference;
-
-                  // Deduct SMS credit
-                  const smsCredit = await SmsCredit.getOrCreate(organizationId);
-                  await smsCredit.deductCredits(1);
-
-                  // Record transaction
-                  await new Transaction({
-                    organizationId,
-                    type: 'shepherd_alert_sms',
-                    direction: 'outflow',
-                    amount: 0, // SMS already tracked in SmsCredit
-                    description: `SMS for Shepherd Alert: ${alert.name} - ${member.firstName} ${member.lastName}`,
-                    relatedModel: 'ShepherdAlertLog',
-                    relatedModelId: log._id,
-                    metadata: {
-                      alertId: alert._id,
-                      memberId: member._id,
-                      eventId: event._id,
-                    },
-                  }).save();
-                }
-              } catch (recipientError) {
-                console.error(
-                  `Error sending SMS to ${recipient.phoneNumber}:`,
-                  recipientError
-                );
-                smsResults.push({
-                  memberId: recipient.memberId,
-                  phoneNumber: recipient.phoneNumber,
-                  status: 'failed',
-                });
-              }
+            if (smsResult.success) {
+              log.smsSent = true;
+              log.smsReference = smsResult.reference;
+            } else {
+              console.warn(`Failed to send shepherd alert SMS: ${smsResult.error}`);
             }
-
-            log.recipientsNotified = smsResults;
-          } catch (smsError) {
-            console.error('Error processing SMS for shepherd alert:', smsError);
-            log.error = smsError.message;
+          } catch (shepherdError) {
+            console.error(`Error sending SMS to shepherd ${shepherd.phoneNumber}:`, shepherdError);
+            smsResults.push({
+              memberId: shepherd.memberId,
+              phoneNumber: shepherd.phoneNumber,
+              status: 'failed',
+            });
           }
         }
 
-        await log.save();
-        logs.push(log);
+        log.recipientsNotified = smsResults;
       }
+
+      await log.save();
+      logs.push(log);
     }
 
     // Update last check time
