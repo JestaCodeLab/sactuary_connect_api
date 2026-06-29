@@ -915,7 +915,7 @@ export const checkBmsBalance = async (req, res) => {
   try {
     const result = await smsService.sendSingleFree({
       phone,
-      message: 'Sanctuary Connect: platform balance check. Please ignore.',
+      message: 'Welcome to Sanctuary Connect.',
       category: 'general',
       metadata: { isBmsBalanceCheck: true },
     });
