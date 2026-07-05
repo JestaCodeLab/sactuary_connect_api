@@ -13,6 +13,7 @@ import {
   generateQRCode,
   getQRCode,
   getEventByToken,
+  searchMembersForCheckIn,
   getServiceCode,
   regenerateServiceCode,
 } from '../controllers/eventController.js';
@@ -22,9 +23,10 @@ import { requireFeature } from '../middleware/featureGate.js';
 
 const router = express.Router();
 
-// Public route (no auth required)
+// Public routes (no auth required)
 router.get('/public/:shareToken', getPublicEvent);
 router.get('/check-in/:token', getEventByToken);
+router.get('/check-in/:token/members', searchMembersForCheckIn);
 
 // Authenticated routes
 router.get('/', authenticateToken, resolveBranchContext, requireFeature('event_management'), getAllEvents);

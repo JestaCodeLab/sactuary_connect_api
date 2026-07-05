@@ -29,7 +29,6 @@ const memberSchema = new mongoose.Schema({
   email: String,
   phone: {
     type: String,
-    required: true,
   },
   dateOfBirth: Date,
   gender: String,
@@ -70,7 +69,22 @@ const memberSchema = new mongoose.Schema({
   },
 });
 
+memberSchema.pre('validate', function (next) {
+  if (!this.phone) {
+    if (!this.dateOfBirth) {
+      return next(new Error('Phone number is required'));
+    }
+    const ageDiffMs = Date.now() - new Date(this.dateOfBirth).getTime();
+    const ageYears = ageDiffMs / (1000 * 60 * 60 * 24 * 365.25);
+    if (ageYears >= 18) {
+      return next(new Error('Phone number is required for members 18 and older'));
+    }
+  }
+  next();
+});
+
 memberSchema.index({ organizationId: 1, branchId: 1 });
-memberSchema.index({ organizationId: 1, phone: 1 }, { unique: true });
+// Sparse: members without a phone (under-18s) are excluded from this unique constraint
+memberSchema.index({ organizationId: 1, phone: 1 }, { unique: true, sparse: true });
 
 export default mongoose.model('Member', memberSchema);

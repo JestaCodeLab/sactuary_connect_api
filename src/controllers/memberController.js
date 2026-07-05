@@ -120,8 +120,19 @@ export const createMember = async (req, res) => {
       familyMembers, departments, notes,
     } = req.body;
 
-    if (!firstName || !lastName || !phone) {
-      return res.status(400).json({ error: 'First name, last name, and phone are required' });
+    if (!firstName || !lastName) {
+      return res.status(400).json({ error: 'First name and last name are required' });
+    }
+
+    if (!phone) {
+      // Phone is only optional for members under 18
+      if (!dateOfBirth) {
+        return res.status(400).json({ error: 'Phone number is required' });
+      }
+      const ageYears = (Date.now() - new Date(dateOfBirth).getTime()) / (1000 * 60 * 60 * 24 * 365.25);
+      if (ageYears >= 18) {
+        return res.status(400).json({ error: 'Phone number is required for members 18 and older' });
+      }
     }
 
     // Check member limit
@@ -157,7 +168,7 @@ export const createMember = async (req, res) => {
       firstName,
       lastName,
       email,
-      phone: normalizePhone(phone),
+      phone: phone ? normalizePhone(phone) : undefined,
       dateOfBirth,
       gender,
       maritalStatus,

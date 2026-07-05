@@ -514,6 +514,46 @@ export const getEventByToken = async (req, res) => {
   }
 };
 
+export const searchMembersForCheckIn = async (req, res) => {
+  try {
+    const { token } = req.params;
+    const { search = '' } = req.query;
+
+    const event = await Event.findOne({ 'qrCode.token': token }).select('organizationId branchId qrCode');
+    if (!event) {
+      return res.status(404).json({ error: 'Invalid check-in token' });
+    }
+
+    if (!search.trim() || search.trim().length < 2) {
+      return res.json({ members: [] });
+    }
+
+    const searchRegex = new RegExp(search.trim(), 'i');
+    const members = await Member.find({
+      organizationId: event.organizationId,
+      $or: [
+        { firstName: searchRegex },
+        { lastName: searchRegex },
+      ],
+    })
+      .select('_id firstName lastName phone')
+      .limit(10)
+      .lean();
+
+    // Mask phone — show last 4 digits only for identity confirmation
+    const results = members.map(m => ({
+      _id: m._id,
+      firstName: m.firstName,
+      lastName: m.lastName,
+      phoneTail: m.phone ? m.phone.slice(-4) : null,
+    }));
+
+    res.json({ members: results });
+  } catch (error) {
+    res.status(500).json({ error: 'Search failed' });
+  }
+};
+
 export const getServiceCode = async (req, res) => {
   try {
     const { id } = req.params;
@@ -655,6 +695,7 @@ export default {
   generateQRCode,
   getQRCode,
   getEventByToken,
+  searchMembersForCheckIn,
   getServiceCode,
   regenerateServiceCode,
 };
