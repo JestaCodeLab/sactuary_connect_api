@@ -9,7 +9,8 @@ export const getAllDonations = async (req, res) => {
   try {
     const donations = await Donation.find(branchFilter(req))
       .populate('donorId', 'firstName lastName email')
-      .populate('fundBucketId', 'name')
+      .populate('fundBucketId', 'name targetAmount targetDate status')
+      .populate('offeringTypeId', 'name')
       .sort({ donationDate: -1 });
     res.json(donations);
   } catch (error) {
@@ -23,7 +24,8 @@ export const getDonationById = async (req, res) => {
     const { id } = req.params;
     const donation = await Donation.findById(id)
       .populate('donorId', 'firstName lastName email')
-      .populate('fundBucketId', 'name');
+      .populate('fundBucketId', 'name targetAmount targetDate status')
+      .populate('offeringTypeId', 'name');
 
     if (!donation) {
       return res.status(404).json({ error: 'Donation not found' });
@@ -38,7 +40,7 @@ export const getDonationById = async (req, res) => {
 
 export const createDonation = async (req, res) => {
   try {
-    const { donorId, amount, donationType, donationDate, paymentMethod, transactionId, notes, fundBucketId } = req.body;
+    const { donorId, amount, donationType, donationDate, paymentMethod, transactionId, notes, fundBucketId, offeringTypeId } = req.body;
 
     if (!amount || amount <= 0) {
       return res.status(400).json({ error: 'Amount must be greater than 0' });
@@ -71,6 +73,7 @@ export const createDonation = async (req, res) => {
       transactionId,
       notes,
       fundBucketId,
+      offeringTypeId,
     });
 
     await donation.save();
@@ -90,7 +93,7 @@ export const createDonation = async (req, res) => {
       relatedId: donation._id,
       description: `${donationType || 'General'} donation`,
       initiatedBy: req.user.userId,
-      metadata: { donorId, donationType, fundBucketId },
+      metadata: { donorId, donationType, fundBucketId, offeringTypeId },
     });
 
     res.status(201).json(donation);

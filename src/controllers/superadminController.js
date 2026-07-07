@@ -13,7 +13,8 @@ import Department from '../models/Department.js';
 import Event from '../models/Event.js';
 import AuditLog from '../models/AuditLog.js';
 import FinanceAccount from '../models/FinanceAccount.js';
-import { processFinanceAccountApproval } from '../jobs/financeApprovalJob.js';
+import { verifyPaystackKey } from '../services/paystackService.js';
+import { encrypt } from '../utils/encryption.js';
 import { PLANS } from '../config/plans.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -1072,7 +1073,7 @@ export const getFinanceAccountDetails = async (req, res) => {
 export const approveFinanceAccount = async (req, res) => {
   try {
     const { id } = req.params;
-    const { notes } = req.body;
+    const { notes, paystackSecretKey, paystackPublicKey } = req.body;
 
     const account = await FinanceAccount.findById(id);
     if (!account) {
@@ -1083,6 +1084,21 @@ export const approveFinanceAccount = async (req, res) => {
       return res.status(400).json({
         error: `Cannot approve account with status: ${account.status}`,
       });
+    }
+
+    // Optionally set Paystack keys in the same step ("added when approving")
+    if (paystackSecretKey || paystackPublicKey) {
+      if (!paystackSecretKey || !paystackPublicKey) {
+        return res.status(400).json({ error: 'Both paystackSecretKey and paystackPublicKey are required to set keys' });
+      }
+      const verification = await verifyPaystackKey(paystackSecretKey);
+      if (!verification.valid) {
+        return res.status(400).json({ error: verification.error || 'Invalid Paystack secret key' });
+      }
+      account.paystackSecretKey = encrypt(paystackSecretKey);
+      account.paystackPublicKey = paystackPublicKey;
+      account.paystackKeysAddedAt = Date.now();
+      account.paystackKeysAddedBy = req.user._id;
     }
 
     // Update account status
@@ -1101,9 +1117,6 @@ export const approveFinanceAccount = async (req, res) => {
     await Organization.findByIdAndUpdate(account.organizationId, {
       financeAccountId: account._id,
     });
-
-    // Paystack subaccount setup is now a manual action triggered by superadmin via setupPaystackSubaccount endpoint
-    // No longer auto-triggered on approval
 
     // Log to audit trail
     await log(req.user._id, 'approve_finance_account', {
@@ -1251,36 +1264,61 @@ export const revokeFinanceAccount = async (req, res) => {
   }
 };
 
-export const setupPaystackSubaccount = async (req, res) => {
+export const setFinanceAccountPaystackKeys = async (req, res) => {
   try {
     const { id } = req.params;
+    const { paystackSecretKey, paystackPublicKey } = req.body;
+
+    if (!paystackSecretKey || !paystackPublicKey) {
+      return res.status(400).json({ error: 'paystackSecretKey and paystackPublicKey are required' });
+    }
 
     const account = await FinanceAccount.findById(id);
     if (!account) {
       return res.status(404).json({ error: 'Finance account not found' });
     }
 
+    if (account.tier !== 'primary') {
+      return res.status(400).json({ error: 'Paystack keys can only be set on the primary finance account' });
+    }
+
     if (account.status !== 'approved') {
       return res.status(400).json({
-        error: `Can only setup Paystack for approved accounts. Current status: ${account.status}`,
+        error: `Can only set Paystack keys for approved accounts. Current status: ${account.status}`,
       });
     }
 
-    // Trigger Paystack subaccount creation
-    processFinanceAccountApproval(account._id, req.user._id).catch((err) =>
-      console.error('[setupPaystackSubaccount] Paystack job error:', err)
-    );
+    const verification = await verifyPaystackKey(paystackSecretKey);
+    if (!verification.valid) {
+      return res.status(400).json({ error: verification.error || 'Invalid Paystack secret key' });
+    }
+
+    account.paystackSecretKey = encrypt(paystackSecretKey);
+    account.paystackPublicKey = paystackPublicKey;
+    account.paystackKeysAddedAt = Date.now();
+    account.paystackKeysAddedBy = req.user._id;
+    account.statusHistory.push({
+      status: 'approved',
+      changedBy: req.user._id,
+      notes: 'Paystack keys configured',
+    });
+    await account.save();
+
+    await log(req.user._id, 'set_finance_account_paystack_keys', {
+      targetOrgId: account.organizationId,
+      details: { financeAccountId: account._id },
+    });
 
     res.json({
-      message: 'Paystack setup initiated. Please wait a moment for the setup to complete.',
+      message: 'Paystack keys saved successfully.',
       account: {
         _id: account._id,
-        paystackMerchantId: account.paystackMerchantId || null,
+        paystackKeysAddedAt: account.paystackKeysAddedAt,
       },
     });
   } catch (error) {
-    console.error('Error setting up Paystack subaccount:', error);
-    res.status(500).json({ error: 'Failed to setup Paystack subaccount' });
+    console.error('Error setting Paystack keys:', error);
+    res.status(500).json({ error: 'Failed to set Paystack keys' });
   }
 };
 

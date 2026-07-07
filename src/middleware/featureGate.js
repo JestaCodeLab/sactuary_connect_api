@@ -33,34 +33,46 @@ export const requireFeature = (featureKey) => {
 };
 
 /**
- * Middleware to gate finance module access by finance account approval status.
- * Must be used after authenticateToken and branchContext middleware.
- * 
+ * Middleware to gate finance module access by branch-scoped finance account
+ * approval status. Must be used after authenticateToken and branchContext
+ * middleware. A specific branch must be selected (no "All Branches"), and that
+ * branch must have its own approved FinanceAccount — either the org's primary
+ * (full KYC) account or a self-service subaccount. Tier-agnostic: both are
+ * gated identically since subaccounts are created already-approved.
+ *
  * Usage: router.get('/path', authenticateToken, resolveBranchContext, financeAccountApproved(), handler)
  */
 export const financeAccountApproved = () => {
   return async (req, res, next) => {
     try {
-      const organizationId = req.org?._id;
-      
+      const organizationId = req.organizationId;
+
       if (!organizationId) {
-        return res.status(403).json({ 
+        return res.status(403).json({
           error: 'Organization context required',
           code: 'NO_ORG_CONTEXT'
         });
       }
 
-      // Check if organization has an approved finance account
-      const financeAccount = await FinanceAccount.findOne({ 
-        organizationId, 
-        status: 'approved' 
+      if (!req.branchId) {
+        return res.status(403).json({
+          error: 'Select a specific branch to access the finance module',
+          code: 'NO_BRANCH_SELECTED'
+        });
+      }
+
+      // Check if this specific branch has an approved finance account
+      const financeAccount = await FinanceAccount.findOne({
+        organizationId,
+        branchId: req.branchId,
+        status: 'approved'
       }).lean();
 
       if (!financeAccount) {
-        return res.status(403).json({ 
-          error: 'Finance account approval required to access this module',
+        return res.status(403).json({
+          error: 'This branch does not have an approved finance account',
           code: 'FINANCE_ACCOUNT_NOT_APPROVED',
-          message: 'Please submit your merchant details for approval before accessing the finance module.'
+          message: 'Set up a finance account for this branch before accessing the finance module.'
         });
       }
 

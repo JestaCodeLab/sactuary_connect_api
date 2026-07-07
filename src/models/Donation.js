@@ -13,6 +13,10 @@ const donationSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
   },
+  // Free-text donor info for public/guest givers who aren't a registered User
+  donorName: String,
+  donorEmail: String,
+  donorPhone: String,
   amount: {
     type: Number,
     required: true,
@@ -28,6 +32,10 @@ const donationSchema = new mongoose.Schema({
   fundBucketId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'FundBucket',
+  },
+  offeringTypeId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'OfferingType',
   },
   createdAt: {
     type: Date,

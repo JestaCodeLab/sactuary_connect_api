@@ -1,30 +1,33 @@
 import axios from 'axios';
 import logger from '../utils/logger.js';
 
-const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY;
 const PAYSTACK_BASE_URL = 'https://api.paystack.co';
 
-const paystackApi = axios.create({
-  baseURL: PAYSTACK_BASE_URL,
-  headers: {
-    Authorization: `Bearer ${PAYSTACK_SECRET_KEY}`,
-    'Content-Type': 'application/json',
-  },
-  timeout: 30000,
-});
+function getClient(secretKey) {
+  const key = secretKey || process.env.PAYSTACK_SECRET_KEY;
+  if (!key) {
+    throw new Error('Paystack secret key is not configured');
+  }
+  return axios.create({
+    baseURL: PAYSTACK_BASE_URL,
+    headers: {
+      Authorization: `Bearer ${key}`,
+      'Content-Type': 'application/json',
+    },
+    timeout: 30000,
+  });
+}
 
 /**
  * Verify a Paystack transaction by reference
  * @param {string} reference - The transaction reference
- * @returns {object} { verified, data } where data contains amount, currency, customer, channel, etc.
+ * @param {string} [secretKey] - Merchant's own secret key; defaults to the platform key
+ * @returns {object} { verified, data } where data contains amount, currency, customer, channel, metadata, etc.
  */
-export async function verifyTransaction(reference) {
+export async function verifyTransaction(reference, secretKey) {
   try {
-    if (!PAYSTACK_SECRET_KEY) {
-      throw new Error('PAYSTACK_SECRET_KEY is not configured');
-    }
-
-    const response = await paystackApi.get(`/transaction/verify/${encodeURIComponent(reference)}`);
+    const client = getClient(secretKey);
+    const response = await client.get(`/transaction/verify/${encodeURIComponent(reference)}`);
 
     const { status, data } = response.data;
 
@@ -50,6 +53,7 @@ export async function verifyTransaction(reference) {
         customer: data.customer,
         authorization: data.authorization,
         gatewayResponse: data.gateway_response,
+        metadata: data.metadata,
       },
     };
   } catch (error) {
@@ -72,6 +76,8 @@ export async function verifyTransaction(reference) {
  * @param {string} [params.callback_url] - URL to redirect after payment
  * @param {object} [params.metadata] - Additional metadata
  * @param {string[]} [params.channels] - Payment channels to allow
+ * @param {string} [params.subaccount] - Paystack subaccount code to route settlement to
+ * @param {string} [secretKey] - Merchant's own secret key; defaults to the platform key
  * @returns {object} { authorization_url, access_code, reference }
  */
 export async function initializeTransaction({
@@ -82,11 +88,10 @@ export async function initializeTransaction({
   callback_url,
   metadata,
   channels,
-}) {
+  subaccount,
+}, secretKey) {
   try {
-    if (!PAYSTACK_SECRET_KEY) {
-      throw new Error('PAYSTACK_SECRET_KEY is not configured');
-    }
+    const client = getClient(secretKey);
 
     const payload = {
       email,
@@ -96,9 +101,10 @@ export async function initializeTransaction({
       ...(callback_url && { callback_url }),
       ...(metadata && { metadata }),
       ...(channels && { channels }),
+      ...(subaccount && { subaccount }),
     };
 
-    const response = await paystackApi.post('/transaction/initialize', payload);
+    const response = await client.post('/transaction/initialize', payload);
 
     const { data } = response.data;
 
@@ -120,47 +126,44 @@ export async function initializeTransaction({
 }
 
 /**
- * Create a Paystack subaccount for merchant account setup
- * @param {object} financeAccountData - Finance account data from form submission
- * @returns {object} { success, paystackMerchantId, paystackAuthorizationUrl, liveMode, error }
+ * Create a Paystack subaccount under a merchant's own account (used both for
+ * the org's primary settlement account historically, and now for individual
+ * branch accounts created under the primary's own keys).
+ * @param {object} params
+ * @param {string} params.secretKey - The Paystack secret key to create the subaccount under (required)
+ * @param {string} params.businessName
+ * @param {string} params.bankCode
+ * @param {string} params.accountNumber
+ * @param {number} [params.percentageCharge] - Platform's cut for this subaccount (default 0)
+ * @returns {object} { success, paystackSubaccountCode, error }
  */
-export async function createMerchantAccount(financeAccountData) {
+export async function createPaystackSubaccount({
+  secretKey,
+  businessName,
+  bankCode,
+  accountNumber,
+  percentageCharge = 0,
+}) {
   try {
-    const {
-      businessName,
-      ownerFullName,
-      ownerEmail,
-      ownerPhone,
-      bankAccountNumber,
-      bankCode,
-      businessAddress,
-    } = financeAccountData;
+    if (!secretKey) {
+      throw new Error('secretKey is required to create a Paystack subaccount');
+    }
 
+    const client = getClient(secretKey);
     const payload = {
       business_name: businessName,
       settlement_bank: bankCode,
-      account_number: bankAccountNumber,
-      subaccount_code: null,
-      integration_title: `${businessName} - Sanctuary Connect`,
-      percentage_charge: 0.8, // Default commission
-      description: `Merchant account for ${businessName}`,
-      contact_name: ownerFullName,
-      contact_email: ownerEmail,
-      contact_phone: ownerPhone,
-      business_address: businessAddress,
-      business_mobile: ownerPhone,
-      business_email: ownerEmail,
+      account_number: accountNumber,
+      percentage_charge: percentageCharge,
     };
 
-    const response = await paystackApi.post('/subaccount', payload);
+    const response = await client.post('/subaccount', payload);
 
     if (response.data && response.data.status) {
       logger.info(`Paystack subaccount created: ${response.data.data.subaccount_code} for ${businessName}`);
       return {
         success: true,
-        paystackMerchantId: response.data.data.subaccount_code,
-        paystackAuthorizationUrl: response.data.data.authorization_url || null,
-        liveMode: process.env.PAYSTACK_LIVE_MODE === 'true',
+        paystackSubaccountCode: response.data.data.subaccount_code,
         rawResponse: response.data.data,
       };
     } else {
@@ -175,8 +178,26 @@ export async function createMerchantAccount(financeAccountData) {
     logger.error(`Error creating Paystack subaccount: ${error.response?.data?.message || error.message}`);
     return {
       success: false,
-      error: error.message,
+      error: error.response?.data?.message || error.message,
       details: error.response?.data || null,
+    };
+  }
+}
+
+/**
+ * Lightweight validation that a secret key is a real, working Paystack key.
+ * @param {string} secretKey
+ * @returns {object} { valid, error }
+ */
+export async function verifyPaystackKey(secretKey) {
+  try {
+    const client = getClient(secretKey);
+    await client.get('/bank', { params: { perPage: 1 } });
+    return { valid: true };
+  } catch (error) {
+    return {
+      valid: false,
+      error: error.response?.data?.message || 'Invalid or unreachable Paystack key',
     };
   }
 }
@@ -185,13 +206,15 @@ export async function createMerchantAccount(financeAccountData) {
  * Verify bank account details
  * @param {string} bankCode - Bank code on Paystack
  * @param {string} accountNumber - Bank account number
+ * @param {string} [secretKey] - Merchant's own secret key; defaults to the platform key
  * @returns {object} { success, accountName, accountNumber, bankCode, error }
  */
-export async function verifyBankAccount(bankCode, accountNumber) {
+export async function verifyBankAccount(bankCode, accountNumber, secretKey) {
   try {
-    const response = await paystackApi.get(
-      `/bank/resolve?account_number=${accountNumber}&bank_code=${bankCode}`
-    );
+    const client = getClient(secretKey);
+    const response = await client.get('/bank/resolve', {
+      params: { account_number: accountNumber, bank_code: bankCode },
+    });
 
     if (response.data && response.data.status) {
       logger.info(`Bank account verified: ${response.data.data.account_name}`);
@@ -212,7 +235,7 @@ export async function verifyBankAccount(bankCode, accountNumber) {
     logger.error(`Error verifying bank account: ${error.response?.data?.message || error.message}`);
     return {
       success: false,
-      error: error.message,
+      error: error.response?.data?.message || error.message,
       details: error.response?.data || null,
     };
   }
@@ -225,7 +248,8 @@ export async function verifyBankAccount(bankCode, accountNumber) {
  */
 export async function listBanks(country = 'NG') {
   try {
-    const response = await paystackApi.get(`/bank?country=${country}&use_cursor=false`);
+    const client = getClient();
+    const response = await client.get('/bank', { params: { country, use_cursor: false } });
 
     if (response.data && response.data.status) {
       logger.info(`Listed ${response.data.data.length} banks for ${country}`);
@@ -252,7 +276,8 @@ export async function listBanks(country = 'NG') {
 export default {
   verifyTransaction,
   initializeTransaction,
-  createMerchantAccount,
+  createPaystackSubaccount,
+  verifyPaystackKey,
   verifyBankAccount,
   listBanks,
 };

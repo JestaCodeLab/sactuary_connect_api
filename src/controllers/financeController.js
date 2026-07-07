@@ -3,8 +3,13 @@ import Expense from '../models/Expense.js';
 import Transaction from '../models/Transaction.js';
 import FinanceAccount from '../models/FinanceAccount.js';
 import Organization from '../models/Organization.js';
+import Branch from '../models/Branch.js';
+import OfferingType from '../models/OfferingType.js';
+import FundBucket from '../models/FundBucket.js';
 import { branchFilter, resolveCreateBranch } from '../utils/branchQuery.js';
 import cloudinary from '../config/cloudinary.js';
+import { decrypt } from '../utils/encryption.js';
+import { verifyBankAccount, createPaystackSubaccount } from '../services/paystackService.js';
 
 export const getFinanceOverview = async (req, res) => {
   try {
@@ -302,6 +307,7 @@ export const getTransactionById = async (req, res) => {
 export const submitFinanceAccount = async (req, res) => {
   try {
     const {
+      branchId,
       businessName,
       businessType,
       businessRegistration,
@@ -314,11 +320,12 @@ export const submitFinanceAccount = async (req, res) => {
       bankCode,
       bankAccountName,
       bankAccountNumber,
-      accountType,
+      bankAccountType,
     } = req.body;
 
     // Validate required fields
     const requiredFields = [
+      'branchId',
       'businessName',
       'businessType',
       'businessRegistration',
@@ -331,7 +338,7 @@ export const submitFinanceAccount = async (req, res) => {
       'bankCode',
       'bankAccountName',
       'bankAccountNumber',
-      'accountType',
+      'bankAccountType',
     ];
 
     for (const field of requiredFields) {
@@ -391,8 +398,13 @@ export const submitFinanceAccount = async (req, res) => {
 
     const organizationId = req.organizationId;
 
-    // Check if finance account already exists for this organization
-    let financeAccount = await FinanceAccount.findOne({ organizationId });
+    const branch = await Branch.findOne({ _id: branchId, organizationId });
+    if (!branch) {
+      return res.status(400).json({ error: 'Invalid branch for this organization' });
+    }
+
+    // Check if this branch already has a finance account (resubmission path)
+    let financeAccount = await FinanceAccount.findOne({ organizationId, branchId });
 
     if (financeAccount) {
       // Only allow update if status is rejected or revoked
@@ -416,7 +428,7 @@ export const submitFinanceAccount = async (req, res) => {
       financeAccount.bankCode = bankCode;
       financeAccount.bankAccountName = bankAccountName;
       financeAccount.bankAccountNumber = bankAccountNumber;
-      financeAccount.accountType = accountType;
+      financeAccount.bankAccountType = bankAccountType;
       financeAccount.status = 'pending';
       financeAccount.submittedAt = Date.now();
       financeAccount.submittedBy = req.user._id;
@@ -426,9 +438,20 @@ export const submitFinanceAccount = async (req, res) => {
         notes: 'Resubmitted after rejection',
       });
     } else {
-      // Create new finance account
+      // Only one primary (full KYC) account per organization — other branches
+      // must use the self-service subaccount path under Finance Settings.
+      const existingPrimary = await FinanceAccount.exists({ organizationId, tier: 'primary' });
+      if (existingPrimary) {
+        return res.status(400).json({
+          error: 'This organization already has a primary finance account. Set up additional branches from Finance Settings instead.',
+        });
+      }
+
+      // Create new primary finance account
       financeAccount = new FinanceAccount({
         organizationId,
+        branchId,
+        tier: 'primary',
         businessName,
         businessType,
         businessRegistration,
@@ -443,7 +466,7 @@ export const submitFinanceAccount = async (req, res) => {
         bankCode,
         bankAccountName,
         bankAccountNumber,
-        accountType,
+        bankAccountType,
         submittedBy: req.user._id,
         statusHistory: [
           {
@@ -501,14 +524,28 @@ export const getFinanceAccountStatus = async (req, res) => {
   try {
     const organizationId = req.organizationId;
 
-    const financeAccount = await FinanceAccount.findOne({ organizationId })
-      .select('-businessRegistrationDoc -taxIdDoc -ownerIdDoc') // Don't return document URLs in status check
+    if (!req.branchId) {
+      return res.json({
+        status: 'no_branch_selected',
+        message: 'Select a specific branch to access the finance module.',
+      });
+    }
+
+    const financeAccount = await FinanceAccount.findOne({ organizationId, branchId: req.branchId })
+      .select('-businessRegistrationDoc -ownerIdDoc -paystackSecretKey') // Don't return document URLs or secrets in status check
       .populate('submittedBy', 'firstName lastName email')
       .populate('approvedBy', 'firstName lastName email')
       .populate('revokedBy', 'firstName lastName email')
       .lean();
 
     if (!financeAccount) {
+      const orgHasPrimary = await FinanceAccount.exists({ organizationId, tier: 'primary' });
+      if (orgHasPrimary) {
+        return res.json({
+          status: 'no_branch_account',
+          message: "This branch doesn't have a finance account yet. Set one up from Finance Settings.",
+        });
+      }
       return res.json({
         status: 'not_started',
         message: 'No finance account setup found. Please submit your merchant details to proceed.',
@@ -519,6 +556,7 @@ export const getFinanceAccountStatus = async (req, res) => {
     const response = {
       _id: financeAccount._id,
       status: financeAccount.status,
+      tier: financeAccount.tier,
       submittedAt: financeAccount.submittedAt,
       businessName: financeAccount.businessName,
       ownerFullName: financeAccount.ownerFullName,
@@ -606,6 +644,301 @@ export const getBankList = async (req, res) => {
   }
 };
 
+// ===== BRANCH FINANCE ACCOUNTS (primary + self-service subaccounts) =====
+
+export const getBranchAccounts = async (req, res) => {
+  try {
+    const organizationId = req.organizationId;
+
+    const [branches, accounts] = await Promise.all([
+      Branch.find({ organizationId }).sort({ isHeadOffice: -1, name: 1 }).lean(),
+      FinanceAccount.find({ organizationId })
+        .select('-businessRegistrationDoc -ownerIdDoc -paystackSecretKey')
+        .lean(),
+    ]);
+
+    const accountByBranch = new Map(accounts.map((a) => [String(a.branchId), a]));
+
+    const result = branches.map((branch) => {
+      const account = accountByBranch.get(String(branch._id));
+      return {
+        branchId: branch._id,
+        branchName: branch.name,
+        isHeadOffice: branch.isHeadOffice,
+        hasAccount: !!account,
+        tier: account?.tier || null,
+        status: account?.status || 'none',
+        paystackKeysConfigured: account?.tier === 'primary' ? !!account?.paystackKeysAddedAt : null,
+      };
+    });
+
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching branch accounts:', error);
+    res.status(500).json({ error: 'Failed to fetch branch accounts' });
+  }
+};
+
+export const createBranchSubaccount = async (req, res) => {
+  try {
+    const { branchId } = req.params;
+    const { bankCode, bankAccountName, bankAccountNumber } = req.body;
+
+    if (!bankCode || !bankAccountName || !bankAccountNumber) {
+      return res.status(400).json({ error: 'bankCode, bankAccountName, and bankAccountNumber are required' });
+    }
+
+    const organizationId = req.organizationId;
+
+    const branch = await Branch.findOne({ _id: branchId, organizationId });
+    if (!branch) {
+      return res.status(404).json({ error: 'Branch not found' });
+    }
+
+    const existing = await FinanceAccount.findOne({ organizationId, branchId });
+    if (existing) {
+      return res.status(400).json({ error: 'This branch already has a finance account' });
+    }
+
+    const primary = await FinanceAccount.findOne({ organizationId, tier: 'primary', status: 'approved' });
+    if (!primary || !primary.paystackSecretKey) {
+      return res.status(400).json({
+        error: "Your organization's primary account must be approved with Paystack keys configured before adding branch accounts",
+      });
+    }
+
+    const primarySecretKey = decrypt(primary.paystackSecretKey);
+
+    const bankVerification = await verifyBankAccount(bankCode, bankAccountNumber, primarySecretKey);
+    if (!bankVerification.success) {
+      return res.status(400).json({ error: bankVerification.error || 'Bank account verification failed' });
+    }
+
+    const subaccountResult = await createPaystackSubaccount({
+      secretKey: primarySecretKey,
+      businessName: `${branch.name} - ${primary.businessName}`,
+      bankCode,
+      accountNumber: bankAccountNumber,
+    });
+
+    if (!subaccountResult.success) {
+      return res.status(400).json({ error: subaccountResult.error || 'Failed to create Paystack subaccount' });
+    }
+
+    const financeAccount = await FinanceAccount.create({
+      organizationId,
+      branchId,
+      tier: 'subaccount',
+      status: 'approved',
+      paystackSubaccountCode: subaccountResult.paystackSubaccountCode,
+      subaccountBankCode: bankCode,
+      subaccountBankAccountName: bankAccountName,
+      subaccountBankAccountNumber: bankAccountNumber,
+      subaccountCreatedAt: Date.now(),
+      subaccountCreatedBy: req.user._id,
+      statusHistory: [
+        {
+          status: 'approved',
+          changedBy: req.user._id,
+          notes: `Subaccount created under primary account (${subaccountResult.paystackSubaccountCode})`,
+        },
+      ],
+    });
+
+    if (req.auditLog) {
+      await req.auditLog.create({
+        actor: req.user._id,
+        action: 'branch_subaccount_created',
+        targetType: 'FinanceAccount',
+        targetId: financeAccount._id,
+        organizationId,
+        details: { branchId, paystackSubaccountCode: subaccountResult.paystackSubaccountCode },
+      });
+    }
+
+    res.status(201).json(financeAccount);
+  } catch (error) {
+    console.error('Error creating branch subaccount:', error);
+    res.status(500).json({ error: 'Failed to create branch subaccount' });
+  }
+};
+
+// ===== OFFERING TYPES (dynamic, per-branch, merchant-defined) =====
+
+export const getOfferingTypes = async (req, res) => {
+  try {
+    let offeringTypes = await OfferingType.find(branchFilter(req)).sort({ createdAt: 1 });
+
+    if (offeringTypes.length === 0) {
+      const branchId = resolveCreateBranch(req);
+      if (!branchId) {
+        return res.status(400).json({ error: 'Branch is required' });
+      }
+      const defaultType = await OfferingType.create({
+        organizationId: req.organizationId,
+        branchId,
+        name: 'General',
+        isDefault: true,
+      });
+      offeringTypes = [defaultType];
+    }
+
+    res.json(offeringTypes);
+  } catch (error) {
+    console.error('Error fetching offering types:', error);
+    res.status(500).json({ error: 'Failed to fetch offering types' });
+  }
+};
+
+export const createOfferingType = async (req, res) => {
+  try {
+    const { name } = req.body;
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Name is required' });
+    }
+
+    const branchId = resolveCreateBranch(req);
+    if (!branchId) {
+      return res.status(400).json({ error: 'Branch is required' });
+    }
+
+    const offeringType = await OfferingType.create({
+      organizationId: req.organizationId,
+      branchId,
+      name: name.trim(),
+    });
+
+    res.status(201).json(offeringType);
+  } catch (error) {
+    console.error('Error creating offering type:', error);
+    res.status(500).json({ error: 'Failed to create offering type' });
+  }
+};
+
+export const updateOfferingType = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, enabled } = req.body;
+
+    const offeringType = await OfferingType.findOne({ _id: id, ...branchFilter(req) });
+    if (!offeringType) {
+      return res.status(404).json({ error: 'Offering type not found' });
+    }
+
+    if (enabled === false && offeringType.enabled) {
+      const otherEnabledCount = await OfferingType.countDocuments({
+        ...branchFilter(req),
+        _id: { $ne: id },
+        enabled: true,
+      });
+      if (otherEnabledCount === 0) {
+        return res.status(400).json({ error: 'Cannot disable the only active offering type' });
+      }
+    }
+
+    if (name !== undefined) offeringType.name = name.trim();
+    if (enabled !== undefined) offeringType.enabled = enabled;
+    await offeringType.save();
+
+    res.json(offeringType);
+  } catch (error) {
+    console.error('Error updating offering type:', error);
+    res.status(500).json({ error: 'Failed to update offering type' });
+  }
+};
+
+// ===== PROJECTS (mission/building/other funds with a fundraising goal) =====
+
+export const getProjects = async (req, res) => {
+  try {
+    const filter = branchFilter(req);
+    // Include legacy org-wide (branchId: null) buckets alongside branch-scoped ones
+    if (filter.branchId) {
+      filter.$or = [{ branchId: filter.branchId }, { branchId: null }];
+      delete filter.branchId;
+    }
+
+    const projects = await FundBucket.find(filter).sort({ createdAt: -1 }).lean();
+    const projectIds = projects.map((p) => p._id);
+
+    const raised = await Donation.aggregate([
+      { $match: { fundBucketId: { $in: projectIds }, donationType: 'project' } },
+      { $group: { _id: '$fundBucketId', raisedAmount: { $sum: '$amount' }, donationCount: { $sum: 1 } } },
+    ]);
+    const raisedById = new Map(raised.map((r) => [String(r._id), r]));
+
+    const result = projects.map((p) => ({
+      ...p,
+      raisedAmount: raisedById.get(String(p._id))?.raisedAmount || 0,
+      donationCount: raisedById.get(String(p._id))?.donationCount || 0,
+    }));
+
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching projects:', error);
+    res.status(500).json({ error: 'Failed to fetch projects' });
+  }
+};
+
+export const createProject = async (req, res) => {
+  try {
+    const { name, description, targetAmount, targetDate } = req.body;
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Name is required' });
+    }
+
+    const branchId = resolveCreateBranch(req);
+    if (!branchId) {
+      return res.status(400).json({ error: 'Branch is required' });
+    }
+
+    const project = await FundBucket.create({
+      organizationId: req.organizationId,
+      branchId,
+      name: name.trim(),
+      description,
+      targetAmount: targetAmount || null,
+      targetDate: targetDate || null,
+    });
+
+    res.status(201).json(project);
+  } catch (error) {
+    console.error('Error creating project:', error);
+    res.status(500).json({ error: 'Failed to create project' });
+  }
+};
+
+export const updateProject = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, description, targetAmount, targetDate, status, enabled } = req.body;
+
+    const filter = branchFilter(req);
+    if (filter.branchId) {
+      filter.$or = [{ branchId: filter.branchId }, { branchId: null }];
+      delete filter.branchId;
+    }
+
+    const project = await FundBucket.findOne({ _id: id, ...filter });
+    if (!project) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+
+    if (name !== undefined) project.name = name.trim();
+    if (description !== undefined) project.description = description;
+    if (targetAmount !== undefined) project.targetAmount = targetAmount || null;
+    if (targetDate !== undefined) project.targetDate = targetDate || null;
+    if (status !== undefined) project.status = status;
+    if (enabled !== undefined) project.enabled = enabled;
+    await project.save();
+
+    res.json(project);
+  } catch (error) {
+    console.error('Error updating project:', error);
+    res.status(500).json({ error: 'Failed to update project' });
+  }
+};
+
 export default {
   getFinanceOverview,
   getFinanceReport,
@@ -615,4 +948,12 @@ export default {
   submitFinanceAccount,
   getFinanceAccountStatus,
   getBankList,
+  getBranchAccounts,
+  createBranchSubaccount,
+  getOfferingTypes,
+  createOfferingType,
+  updateOfferingType,
+  getProjects,
+  createProject,
+  updateProject,
 };
