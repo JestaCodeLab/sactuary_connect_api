@@ -14,6 +14,7 @@ import {
   getOfferingTypes,
   createOfferingType,
   updateOfferingType,
+  deleteOfferingType,
   getProjects,
   createProject,
   updateProject,
@@ -77,6 +78,7 @@ router.get('/transactions/:id', authenticateToken, resolveBranchContext, authori
 router.get('/offering-types', authenticateToken, resolveBranchContext, financeAccountApproved(), getOfferingTypes);
 router.post('/offering-types', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), financeAccountApproved(), createOfferingType);
 router.put('/offering-types/:id', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), financeAccountApproved(), updateOfferingType);
+router.delete('/offering-types/:id', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), financeAccountApproved(), deleteOfferingType);
 
 // Projects (mission/building/other funds with a fundraising goal)
 router.get('/projects', authenticateToken, resolveBranchContext, financeAccountApproved(), getProjects);

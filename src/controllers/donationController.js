@@ -7,11 +7,66 @@ import { checkDonationLimit } from '../utils/usageLimits.js';
 
 export const getAllDonations = async (req, res) => {
   try {
-    const donations = await Donation.find(branchFilter(req))
+    const { startDate, endDate, donationType, page, limit } = req.query;
+
+    const filter = branchFilter(req);
+    if (startDate || endDate) {
+      filter.donationDate = {};
+      if (startDate) filter.donationDate.$gte = new Date(startDate);
+      if (endDate) filter.donationDate.$lte = new Date(endDate);
+    }
+    if (donationType) filter.donationType = donationType;
+
+    // Pagination is opt-in (page/limit present) so existing unpaginated
+    // callers keep getting a plain array back.
+    if (page || limit) {
+      const pageNum = Math.max(1, parseInt(page) || 1);
+      const limitNum = Math.min(100, Math.max(1, parseInt(limit) || 20));
+      const skip = (pageNum - 1) * limitNum;
+
+      const now = new Date();
+      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+      const monthFilter = { ...branchFilter(req), donationDate: { $gte: monthStart } };
+      if (donationType) monthFilter.donationType = donationType;
+
+      const [donations, total, totals, monthTotals] = await Promise.all([
+        Donation.find(filter)
+          .populate('donorId', 'firstName lastName email')
+          .populate('fundBucketId', 'name targetAmount targetDate status')
+          .populate('offeringTypeId', 'name')
+          .sort({ createdAt: -1 })
+          .skip(skip)
+          .limit(limitNum),
+        Donation.countDocuments(filter),
+        Donation.aggregate([
+          { $match: filter },
+          { $group: { _id: null, totalAmount: { $sum: '$amount' } } },
+        ]),
+        Donation.aggregate([
+          { $match: monthFilter },
+          { $group: { _id: null, totalAmount: { $sum: '$amount' } } },
+        ]),
+      ]);
+
+      const totalAmount = totals[0]?.totalAmount || 0;
+
+      return res.json({
+        donations,
+        total,
+        page: pageNum,
+        limit: limitNum,
+        totalPages: Math.ceil(total / limitNum),
+        totalAmount,
+        averageAmount: total > 0 ? totalAmount / total : 0,
+        monthlyTotal: monthTotals[0]?.totalAmount || 0,
+      });
+    }
+
+    const donations = await Donation.find(filter)
       .populate('donorId', 'firstName lastName email')
       .populate('fundBucketId', 'name targetAmount targetDate status')
       .populate('offeringTypeId', 'name')
-      .sort({ donationDate: -1 });
+      .sort({ createdAt: -1 });
     res.json(donations);
   } catch (error) {
     console.error('Error fetching donations:', error);
@@ -40,7 +95,15 @@ export const getDonationById = async (req, res) => {
 
 export const createDonation = async (req, res) => {
   try {
-    const { donorId, amount, donationType, donationDate, paymentMethod, transactionId, notes, fundBucketId, offeringTypeId } = req.body;
+    const { donorId, amount, donationType, donationDate, paymentMethod, transactionId, notes, fundBucketId, offeringTypeId, donorName, donorEmail, donorPhone } = req.body;
+
+    console.log('📥 createDonation received:', {
+      donorId,
+      donorType: req.body.donorType,
+      donorName,
+      amount,
+      donationType,
+    });
 
     if (!amount || amount <= 0) {
       return res.status(400).json({ error: 'Amount must be greater than 0' });
@@ -62,21 +125,47 @@ export const createDonation = async (req, res) => {
       });
     }
 
-    const donation = new Donation({
+    const donationData = {
       organizationId: req.organizationId,
       branchId,
-      donorId,
       amount,
       donationType,
       donationDate,
       paymentMethod,
       transactionId,
       notes,
-      fundBucketId,
-      offeringTypeId,
-    });
+      fundBucketId: fundBucketId || undefined,
+      offeringTypeId: offeringTypeId || undefined,
+    };
+
+    // Handle donorId - accept if it exists and is not empty
+    if (donorId) {
+      const trimmedDonorId = typeof donorId === 'string' ? donorId.trim() : donorId;
+      if (trimmedDonorId) {
+        donationData.donorId = trimmedDonorId;
+        console.log('✅ Setting donorId:', trimmedDonorId);
+      }
+    } else {
+      console.log('⚠️ donorId is missing or falsy:', donorId);
+    }
+
+    // Add donor info for guest donations
+    if (donorName) donationData.donorName = donorName;
+    if (donorEmail) donationData.donorEmail = donorEmail;
+    if (donorPhone) donationData.donorPhone = donorPhone;
+
+    console.log('📝 Donation data before save:', JSON.stringify(donationData, null, 2));
+
+    const donation = new Donation(donationData);
 
     await donation.save();
+
+    console.log('💾 Saved donation:', {
+      _id: donation._id,
+      donorId: donation.donorId,
+      amount: donation.amount,
+      donationType: donation.donationType,
+    });
 
     // Record in unified transaction ledger
     await Transaction.create({
@@ -96,10 +185,18 @@ export const createDonation = async (req, res) => {
       metadata: { donorId, donationType, fundBucketId, offeringTypeId },
     });
 
+    // Populate references before returning (so frontend doesn't show "Anonymous")
+    await donation.populate('donorId', 'firstName lastName email');
+    await donation.populate('fundBucketId', 'name targetAmount targetDate status');
+    await donation.populate('offeringTypeId', 'name');
+
     res.status(201).json(donation);
   } catch (error) {
-    console.error('Error creating donation:', error);
-    res.status(500).json({ error: 'Failed to create donation' });
+    console.error('Error creating donation:', error.message, error.stack);
+    res.status(500).json({
+      error: 'Failed to create donation',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 };
 
@@ -116,6 +213,11 @@ export const updateDonation = async (req, res) => {
     if (!donation) {
       return res.status(404).json({ error: 'Donation not found' });
     }
+
+    // Populate references before returning
+    await donation.populate('donorId', 'firstName lastName email');
+    await donation.populate('fundBucketId', 'name targetAmount targetDate status');
+    await donation.populate('offeringTypeId', 'name');
 
     res.json(donation);
   } catch (error) {

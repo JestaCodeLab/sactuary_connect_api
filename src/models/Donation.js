@@ -11,7 +11,7 @@ const donationSchema = new mongoose.Schema({
   },
   donorId: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
+    ref: 'Member',
   },
   // Free-text donor info for public/guest givers who aren't a registered User
   donorName: String,

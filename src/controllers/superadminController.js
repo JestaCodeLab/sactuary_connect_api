@@ -1075,6 +1075,10 @@ export const approveFinanceAccount = async (req, res) => {
     const { id } = req.params;
     const { notes, paystackSecretKey, paystackPublicKey } = req.body;
 
+    if (!req.user || !req.user.userId) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
+
     const account = await FinanceAccount.findById(id);
     if (!account) {
       return res.status(404).json({ error: 'Finance account not found' });
@@ -1085,6 +1089,8 @@ export const approveFinanceAccount = async (req, res) => {
         error: `Cannot approve account with status: ${account.status}`,
       });
     }
+
+    const actorId = req.user.userId;
 
     // Optionally set Paystack keys in the same step ("added when approving")
     if (paystackSecretKey || paystackPublicKey) {
@@ -1098,16 +1104,16 @@ export const approveFinanceAccount = async (req, res) => {
       account.paystackSecretKey = encrypt(paystackSecretKey);
       account.paystackPublicKey = paystackPublicKey;
       account.paystackKeysAddedAt = Date.now();
-      account.paystackKeysAddedBy = req.user._id;
+      account.paystackKeysAddedBy = actorId;
     }
 
     // Update account status
     account.status = 'approved';
     account.approvedAt = Date.now();
-    account.approvedBy = req.user._id;
+    account.approvedBy = actorId;
     account.statusHistory.push({
       status: 'approved',
-      changedBy: req.user._id,
+      changedBy: actorId,
       notes: notes || 'Approved by superadmin',
     });
 
@@ -1119,7 +1125,7 @@ export const approveFinanceAccount = async (req, res) => {
     });
 
     // Log to audit trail
-    await log(req.user._id, 'approve_finance_account', {
+    await log(actorId, 'approve_finance_account', {
       targetOrgId: account.organizationId,
       details: {
         financeAccountId: account._id,
@@ -1137,8 +1143,11 @@ export const approveFinanceAccount = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error('Error approving finance account:', error);
-    res.status(500).json({ error: 'Failed to approve finance account' });
+    console.error('Error approving finance account:', error.message, error.stack);
+    res.status(500).json({
+      error: 'Failed to approve finance account',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 };
 
@@ -1149,6 +1158,10 @@ export const rejectFinanceAccount = async (req, res) => {
 
     if (!rejectionReason) {
       return res.status(400).json({ error: 'rejectionReason is required' });
+    }
+
+    if (!req.user || !req.user.userId) {
+      return res.status(401).json({ error: 'User not authenticated' });
     }
 
     const account = await FinanceAccount.findById(id);
@@ -1162,20 +1175,22 @@ export const rejectFinanceAccount = async (req, res) => {
       });
     }
 
+    const actorId = req.user.userId;
+
     // Update account status
     account.status = 'rejected';
     account.rejectionReason = rejectionReason;
     account.rejectionDetails = rejectionDetails || '';
     account.statusHistory.push({
       status: 'rejected',
-      changedBy: req.user._id,
+      changedBy: actorId,
       notes: rejectionReason,
     });
 
     await account.save();
 
     // Log to audit trail
-    await log(req.user._id, 'reject_finance_account', {
+    await log(actorId, 'reject_finance_account', {
       targetOrgId: account.organizationId,
       details: {
         financeAccountId: account._id,
@@ -1195,8 +1210,11 @@ export const rejectFinanceAccount = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error('Error rejecting finance account:', error);
-    res.status(500).json({ error: 'Failed to reject finance account' });
+    console.error('Error rejecting finance account:', error.message, error.stack);
+    res.status(500).json({
+      error: 'Failed to reject finance account',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 };
 
@@ -1207,6 +1225,10 @@ export const revokeFinanceAccount = async (req, res) => {
 
     if (!revokedReason) {
       return res.status(400).json({ error: 'revokedReason is required' });
+    }
+
+    if (!req.user || !req.user.userId) {
+      return res.status(401).json({ error: 'User not authenticated' });
     }
 
     const account = await FinanceAccount.findById(id);
@@ -1220,15 +1242,17 @@ export const revokeFinanceAccount = async (req, res) => {
       });
     }
 
-    // Update account status
-    account.status = 'revoked';
+    const actorId = req.user.userId;
+
+    // Revert account status back to pending
+    account.status = 'pending';
     account.revokedAt = Date.now();
-    account.revokedBy = req.user._id;
+    account.revokedBy = actorId;
     account.revokedReason = revokedReason;
     account.statusHistory.push({
-      status: 'revoked',
-      changedBy: req.user._id,
-      notes: revokedReason,
+      status: 'pending',
+      changedBy: actorId,
+      notes: `Revoked by superadmin: ${revokedReason}`,
     });
 
     await account.save();
@@ -1239,7 +1263,7 @@ export const revokeFinanceAccount = async (req, res) => {
     });
 
     // Log to audit trail
-    await log(req.user._id, 'revoke_finance_account', {
+    await log(actorId, 'revoke_finance_account', {
       targetOrgId: account.organizationId,
       details: {
         financeAccountId: account._id,
@@ -1251,7 +1275,7 @@ export const revokeFinanceAccount = async (req, res) => {
     // TODO: Send email notification to organization admin about revocation
 
     res.json({
-      message: 'Finance account revoked successfully',
+      message: 'Finance account revoked and returned to pending status',
       account: {
         _id: account._id,
         status: account.status,
@@ -1259,8 +1283,11 @@ export const revokeFinanceAccount = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error('Error revoking finance account:', error);
-    res.status(500).json({ error: 'Failed to revoke finance account' });
+    console.error('Error revoking finance account:', error.message, error.stack);
+    res.status(500).json({
+      error: 'Failed to revoke finance account',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 };
 

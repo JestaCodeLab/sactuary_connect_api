@@ -407,10 +407,18 @@ export const submitFinanceAccount = async (req, res) => {
     let financeAccount = await FinanceAccount.findOne({ organizationId, branchId });
 
     if (financeAccount) {
-      // Only allow update if status is rejected or revoked
-      if (!['rejected', 'revoked'].includes(financeAccount.status)) {
+      // Only allow update if status is rejected, pending (from revoke), or the original pending
+      // Don't allow resubmit if already approved or currently in submission process
+      if (!['rejected', 'pending', 'revoked'].includes(financeAccount.status)) {
         return res.status(400).json({
           error: `Cannot resubmit. Current status: ${financeAccount.status}`,
+        });
+      }
+
+      // If currently pending, don't allow resubmit (still waiting for approval)
+      if (financeAccount.status === 'pending') {
+        return res.status(400).json({
+          error: 'Your submission is still pending approval. Please wait for a decision before resubmitting.',
         });
       }
       // Update existing document
@@ -810,8 +818,11 @@ export const createOfferingType = async (req, res) => {
 
     res.status(201).json(offeringType);
   } catch (error) {
-    console.error('Error creating offering type:', error);
-    res.status(500).json({ error: 'Failed to create offering type' });
+    console.error('Error creating offering type:', error.message, error.stack);
+    res.status(500).json({
+      error: 'Failed to create offering type',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 };
 
@@ -844,6 +855,31 @@ export const updateOfferingType = async (req, res) => {
   } catch (error) {
     console.error('Error updating offering type:', error);
     res.status(500).json({ error: 'Failed to update offering type' });
+  }
+};
+
+export const deleteOfferingType = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const offeringType = await OfferingType.findOne({ _id: id, ...branchFilter(req) });
+    if (!offeringType) {
+      return res.status(404).json({ error: 'Offering type not found' });
+    }
+
+    const hasDonations = await Donation.exists({ offeringTypeId: id });
+    if (hasDonations) {
+      return res.status(400).json({
+        error: 'Cannot delete a type that already has recorded offerings. Disable it instead.',
+      });
+    }
+
+    await OfferingType.deleteOne({ _id: id });
+
+    res.json({ message: 'Offering type deleted' });
+  } catch (error) {
+    console.error('Error deleting offering type:', error);
+    res.status(500).json({ error: 'Failed to delete offering type' });
   }
 };
 
@@ -903,8 +939,11 @@ export const createProject = async (req, res) => {
 
     res.status(201).json(project);
   } catch (error) {
-    console.error('Error creating project:', error);
-    res.status(500).json({ error: 'Failed to create project' });
+    console.error('Error creating project:', error.message, error.stack);
+    res.status(500).json({
+      error: 'Failed to create project',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 };
 
@@ -953,6 +992,7 @@ export default {
   getOfferingTypes,
   createOfferingType,
   updateOfferingType,
+  deleteOfferingType,
   getProjects,
   createProject,
   updateProject,
