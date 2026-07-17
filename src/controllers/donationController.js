@@ -7,7 +7,7 @@ import { checkDonationLimit } from '../utils/usageLimits.js';
 
 export const getAllDonations = async (req, res) => {
   try {
-    const { startDate, endDate, donationType, page, limit } = req.query;
+    const { startDate, endDate, donationType, fundBucketId, page, limit } = req.query;
 
     const filter = branchFilter(req);
     if (startDate || endDate) {
@@ -16,6 +16,7 @@ export const getAllDonations = async (req, res) => {
       if (endDate) filter.donationDate.$lte = new Date(endDate);
     }
     if (donationType) filter.donationType = donationType;
+    if (fundBucketId) filter.fundBucketId = fundBucketId;
 
     // Pagination is opt-in (page/limit present) so existing unpaginated
     // callers keep getting a plain array back.
@@ -28,12 +29,14 @@ export const getAllDonations = async (req, res) => {
       const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
       const monthFilter = { ...branchFilter(req), donationDate: { $gte: monthStart } };
       if (donationType) monthFilter.donationType = donationType;
+      if (fundBucketId) monthFilter.fundBucketId = fundBucketId;
 
       const [donations, total, totals, monthTotals] = await Promise.all([
         Donation.find(filter)
           .populate('donorId', 'firstName lastName email')
           .populate('fundBucketId', 'name targetAmount targetDate status')
           .populate('offeringTypeId', 'name')
+          .populate('eventId', 'title startDate')
           .sort({ createdAt: -1 })
           .skip(skip)
           .limit(limitNum),
@@ -66,6 +69,7 @@ export const getAllDonations = async (req, res) => {
       .populate('donorId', 'firstName lastName email')
       .populate('fundBucketId', 'name targetAmount targetDate status')
       .populate('offeringTypeId', 'name')
+      .populate('eventId', 'title startDate')
       .sort({ createdAt: -1 });
     res.json(donations);
   } catch (error) {
@@ -77,10 +81,11 @@ export const getAllDonations = async (req, res) => {
 export const getDonationById = async (req, res) => {
   try {
     const { id } = req.params;
-    const donation = await Donation.findById(id)
+    const donation = await Donation.findOne({ _id: id, ...branchFilter(req) })
       .populate('donorId', 'firstName lastName email')
       .populate('fundBucketId', 'name targetAmount targetDate status')
-      .populate('offeringTypeId', 'name');
+      .populate('offeringTypeId', 'name')
+      .populate('eventId', 'title startDate');
 
     if (!donation) {
       return res.status(404).json({ error: 'Donation not found' });
@@ -95,7 +100,7 @@ export const getDonationById = async (req, res) => {
 
 export const createDonation = async (req, res) => {
   try {
-    const { donorId, amount, donationType, donationDate, paymentMethod, transactionId, notes, fundBucketId, offeringTypeId, donorName, donorEmail, donorPhone } = req.body;
+    const { donorId, amount, donationType, donationDate, paymentMethod, transactionId, notes, fundBucketId, offeringTypeId, eventId, donorName, donorEmail, donorPhone } = req.body;
 
     console.log('📥 createDonation received:', {
       donorId,
@@ -136,6 +141,7 @@ export const createDonation = async (req, res) => {
       notes,
       fundBucketId: fundBucketId || undefined,
       offeringTypeId: offeringTypeId || undefined,
+      eventId: eventId || undefined,
     };
 
     // Handle donorId - accept if it exists and is not empty
@@ -189,6 +195,7 @@ export const createDonation = async (req, res) => {
     await donation.populate('donorId', 'firstName lastName email');
     await donation.populate('fundBucketId', 'name targetAmount targetDate status');
     await donation.populate('offeringTypeId', 'name');
+    await donation.populate('eventId', 'title startDate');
 
     res.status(201).json(donation);
   } catch (error) {
@@ -208,16 +215,31 @@ export const updateDonation = async (req, res) => {
     delete updates.organizationId;
     delete updates.branchId;
 
-    const donation = await Donation.findByIdAndUpdate(id, updates, { new: true });
+    const donation = await Donation.findOneAndUpdate(
+      { _id: id, ...branchFilter(req) },
+      updates,
+      { new: true }
+    );
 
     if (!donation) {
       return res.status(404).json({ error: 'Donation not found' });
     }
 
+    // Keep the ledger entry in sync (mirrors the same fix on expenses)
+    await Transaction.findOneAndUpdate(
+      { relatedModel: 'Donation', relatedId: donation._id },
+      {
+        amount: donation.amount,
+        paymentMethod: donation.paymentMethod,
+        description: `${donation.donationType || 'General'} donation`,
+      }
+    );
+
     // Populate references before returning
     await donation.populate('donorId', 'firstName lastName email');
     await donation.populate('fundBucketId', 'name targetAmount targetDate status');
     await donation.populate('offeringTypeId', 'name');
+    await donation.populate('eventId', 'title startDate');
 
     res.json(donation);
   } catch (error) {
@@ -268,7 +290,7 @@ export const sendReceipt = async (req, res) => {
     const { id } = req.params;
     const { channel } = req.body; // 'email' or 'sms'
 
-    const donation = await Donation.findById(id)
+    const donation = await Donation.findOne({ _id: id, ...branchFilter(req) })
       .populate('donorId', 'firstName lastName email phone')
       .populate('fundBucketId', 'name');
 

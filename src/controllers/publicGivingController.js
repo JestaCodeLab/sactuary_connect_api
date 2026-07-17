@@ -87,7 +87,7 @@ export const getGivingInfo = async (req, res) => {
 // POST /api/public/giving/initialize
 export const initializeGivingPayment = async (req, res) => {
   try {
-    const { organizationId, branchId, donationType, offeringTypeId, fundBucketId, amount, email, donorName, donorPhone } = req.body;
+    const { organizationId, branchId, donationType, offeringTypeId, fundBucketId, eventId, amount, email, donorName, donorPhone } = req.body;
 
     if (!organizationId || !branchId || !donationType || !amount || !email) {
       return res.status(400).json({ error: 'organizationId, branchId, donationType, amount, and email are required' });
@@ -117,13 +117,15 @@ export const initializeGivingPayment = async (req, res) => {
     const secretKey = decrypt(primary.paystackSecretKey);
     const reference = `give_${organizationId}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const subaccount = targetAccount.tier === 'subaccount' ? targetAccount.paystackSubaccountCode : undefined;
+    const callbackUrl = `${process.env.CLIENT_URL || 'https://app.sanctuaryconnect.org'}/give/${organizationId}?reference=${reference}`;
 
     const result = await initializeTransaction({
       email,
       amount: Math.round(amount * 100),
       currency: org.currency || 'GHS',
       reference,
-      metadata: { organizationId, branchId, donationType, offeringTypeId, fundBucketId, donorName, donorPhone },
+      callback_url: callbackUrl,
+      metadata: { organizationId, branchId, donationType, offeringTypeId, fundBucketId, eventId, donorName, donorPhone },
       subaccount,
     }, secretKey);
 
@@ -164,7 +166,7 @@ export const verifyGivingPayment = async (req, res) => {
     }
 
     const { amount, currency, channel, metadata, customer } = verification.data;
-    const { branchId, donationType, offeringTypeId, fundBucketId, donorName, donorPhone } = metadata || {};
+    const { branchId, donationType, offeringTypeId, fundBucketId, eventId, donorName, donorPhone } = metadata || {};
 
     const donation = await Donation.create({
       organizationId,
@@ -179,6 +181,7 @@ export const verifyGivingPayment = async (req, res) => {
       donorPhone,
       offeringTypeId: donationType === 'offering' ? offeringTypeId : undefined,
       fundBucketId: donationType === 'project' ? fundBucketId : undefined,
+      eventId: eventId || undefined,
     });
 
     await Transaction.create({

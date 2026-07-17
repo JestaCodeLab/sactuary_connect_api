@@ -3,6 +3,7 @@ import multer from 'multer';
 import {
   getFinanceOverview,
   getFinanceReport,
+  getFinanceReportPdf,
   getTransactions,
   getTransactionSummary,
   getTransactionById,
@@ -15,9 +16,17 @@ import {
   createOfferingType,
   updateOfferingType,
   deleteOfferingType,
+  getExpenseCategories,
+  createExpenseCategory,
+  updateExpenseCategory,
+  deleteExpenseCategory,
   getProjects,
   createProject,
   updateProject,
+  getProjectGroups,
+  createProjectGroup,
+  updateProjectGroup,
+  deleteProjectGroup,
 } from '../controllers/financeController.js';
 import { authenticateToken, authorizeRole } from '../middleware/auth.js';
 import { resolveBranchContext } from '../middleware/branchContext.js';
@@ -66,6 +75,7 @@ router.post('/branch-accounts/:branchId/subaccount', authenticateToken, resolveB
 // ===== FINANCE REPORTING & ANALYTICS (Gated by branch finance account approval) =====
 router.get('/overview', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), financeAccountApproved(), requireFeature('financial_reporting'), getFinanceOverview);
 router.get('/reports', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), financeAccountApproved(), requireFeature('advanced_financial_reporting'), getFinanceReport);
+router.get('/reports/pdf', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), financeAccountApproved(), requireFeature('advanced_financial_reporting'), getFinanceReportPdf);
 
 // Transaction ledger — NOT gated by finance account approval: it includes
 // subscription_payment/sms_credit_purchase records unrelated to a branch's
@@ -80,9 +90,21 @@ router.post('/offering-types', authenticateToken, resolveBranchContext, authoriz
 router.put('/offering-types/:id', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), financeAccountApproved(), updateOfferingType);
 router.delete('/offering-types/:id', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), financeAccountApproved(), deleteOfferingType);
 
+// Expense categories (dynamic, branch-scoped, merchant-defined)
+router.get('/expense-categories', authenticateToken, resolveBranchContext, financeAccountApproved(), getExpenseCategories);
+router.post('/expense-categories', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), financeAccountApproved(), createExpenseCategory);
+router.put('/expense-categories/:id', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), financeAccountApproved(), updateExpenseCategory);
+router.delete('/expense-categories/:id', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), financeAccountApproved(), deleteExpenseCategory);
+
 // Projects (mission/building/other funds with a fundraising goal)
 router.get('/projects', authenticateToken, resolveBranchContext, financeAccountApproved(), getProjects);
 router.post('/projects', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), financeAccountApproved(), createProject);
 router.put('/projects/:id', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), financeAccountApproved(), updateProject);
+
+// Project groups (dynamic, branch-scoped, merchant-defined categories for projects)
+router.get('/project-groups', authenticateToken, resolveBranchContext, financeAccountApproved(), getProjectGroups);
+router.post('/project-groups', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), financeAccountApproved(), createProjectGroup);
+router.put('/project-groups/:id', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), financeAccountApproved(), updateProjectGroup);
+router.delete('/project-groups/:id', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), financeAccountApproved(), deleteProjectGroup);
 
 export default router;

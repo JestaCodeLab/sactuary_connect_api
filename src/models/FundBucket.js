@@ -16,6 +16,11 @@ const fundBucketSchema = new mongoose.Schema({
     required: true,
   },
   description: String,
+  groupId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ProjectGroup',
+    default: null,
+  },
   enabled: {
     type: Boolean,
     default: true,

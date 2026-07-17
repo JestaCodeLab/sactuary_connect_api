@@ -37,6 +37,11 @@ const donationSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'OfferingType',
   },
+  // The service/event this offering was collected at, if applicable
+  eventId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Event',
+  },
   createdAt: {
     type: Date,
     default: Date.now,

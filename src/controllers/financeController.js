@@ -1,3 +1,4 @@
+import PDFDocument from 'pdfkit';
 import Donation from '../models/Donation.js';
 import Expense from '../models/Expense.js';
 import Transaction from '../models/Transaction.js';
@@ -6,6 +7,8 @@ import Organization from '../models/Organization.js';
 import Branch from '../models/Branch.js';
 import OfferingType from '../models/OfferingType.js';
 import FundBucket from '../models/FundBucket.js';
+import ExpenseCategory from '../models/ExpenseCategory.js';
+import ProjectGroup from '../models/ProjectGroup.js';
 import { branchFilter, resolveCreateBranch } from '../utils/branchQuery.js';
 import cloudinary from '../config/cloudinary.js';
 import { decrypt } from '../utils/encryption.js';
@@ -20,9 +23,9 @@ export const getFinanceOverview = async (req, res) => {
     ]);
     const totalIncome = incomeResult[0]?.total || 0;
 
-    // Get total expenses
+    // Get total expenses (approved only — pending/rejected aren't real outflow yet)
     const expenseResult = await Expense.aggregate([
-      { $match: branchFilter(req) },
+      { $match: { ...branchFilter(req), status: 'approved' } },
       { $group: { _id: null, total: { $sum: '$amount' } } },
     ]);
     const totalExpenses = expenseResult[0]?.total || 0;
@@ -43,7 +46,7 @@ export const getFinanceOverview = async (req, res) => {
     ]);
 
     const monthlyExpenses = await Expense.aggregate([
-      { $match: { ...branchFilter(req), date: { $gte: sixMonthsAgo } } },
+      { $match: { ...branchFilter(req), status: 'approved', date: { $gte: sixMonthsAgo } } },
       {
         $group: {
           _id: { $dateToString: { format: '%Y-%m', date: '$date' } },
@@ -90,7 +93,7 @@ export const getFinanceOverview = async (req, res) => {
     const monthlyIncomeTotalCurrent = monthlyIncomeResult[0]?.total || 0;
 
     const monthlyExpenseResult = await Expense.aggregate([
-      { $match: { ...branchFilter(req), date: { $gte: monthStart } } },
+      { $match: { ...branchFilter(req), status: 'approved', date: { $gte: monthStart } } },
       { $group: { _id: null, total: { $sum: '$amount' } } },
     ]);
     const monthlyExpenseTotalCurrent = monthlyExpenseResult[0]?.total || 0;
@@ -104,7 +107,7 @@ export const getFinanceOverview = async (req, res) => {
     const ytdIncome = ytdIncomeResult[0]?.total || 0;
 
     const ytdExpenseResult = await Expense.aggregate([
-      { $match: { ...branchFilter(req), date: { $gte: yearStart } } },
+      { $match: { ...branchFilter(req), status: 'approved', date: { $gte: yearStart } } },
       { $group: { _id: null, total: { $sum: '$amount' } } },
     ]);
     const ytdExpenses = ytdExpenseResult[0]?.total || 0;
@@ -136,55 +139,152 @@ export const getFinanceOverview = async (req, res) => {
   }
 };
 
+// Shared by getFinanceReport (JSON) and getFinanceReportPdf (PDF export)
+async function fetchReportData(req, startDate, endDate) {
+  const dateFilter = {};
+  if (startDate) dateFilter.$gte = new Date(startDate);
+  if (endDate) dateFilter.$lte = new Date(endDate);
+
+  const donationFilter = startDate || endDate ? { ...branchFilter(req), donationDate: dateFilter } : { ...branchFilter(req) };
+  const expenseFilter = startDate || endDate
+    ? { ...branchFilter(req), status: 'approved', date: dateFilter }
+    : { ...branchFilter(req), status: 'approved' };
+
+  const [donations, expenses] = await Promise.all([
+    Donation.find(donationFilter)
+      .populate('donorId', 'firstName lastName')
+      .populate('fundBucketId', 'name')
+      .sort({ donationDate: -1 }),
+    Expense.find(expenseFilter)
+      .populate('approvedBy', 'firstName lastName')
+      .populate('categoryId', 'name')
+      .sort({ date: -1 }),
+  ]);
+
+  const totalIncome = donations.reduce((sum, d) => sum + d.amount, 0);
+  const totalExpenses = expenses.reduce((sum, e) => sum + e.amount, 0);
+
+  // Income by type
+  const incomeByType = {};
+  donations.forEach((d) => {
+    const type = d.donationType || 'other';
+    incomeByType[type] = (incomeByType[type] || 0) + d.amount;
+  });
+
+  // Expenses by category — group by the category's current name (via
+  // categoryId) so a rename doesn't split history into two buckets; only
+  // legacy expenses with no categoryId fall back to their frozen string.
+  const expensesByCategory = {};
+  expenses.forEach((e) => {
+    const label = e.categoryId?.name || e.category;
+    expensesByCategory[label] = (expensesByCategory[label] || 0) + e.amount;
+  });
+
+  return {
+    totalIncome,
+    totalExpenses,
+    netBalance: totalIncome - totalExpenses,
+    incomeByType,
+    expensesByCategory,
+    donations,
+    expenses,
+  };
+}
+
 export const getFinanceReport = async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
-
-    const dateFilter = {};
-    if (startDate) dateFilter.$gte = new Date(startDate);
-    if (endDate) dateFilter.$lte = new Date(endDate);
-
-    const donationFilter = startDate || endDate ? { ...branchFilter(req), donationDate: dateFilter } : { ...branchFilter(req) };
-    const expenseFilter = startDate || endDate ? { ...branchFilter(req), date: dateFilter } : { ...branchFilter(req) };
-
-    const [donations, expenses] = await Promise.all([
-      Donation.find(donationFilter)
-        .populate('donorId', 'firstName lastName')
-        .populate('fundBucketId', 'name')
-        .sort({ donationDate: -1 }),
-      Expense.find(expenseFilter)
-        .populate('approvedBy', 'firstName lastName')
-        .sort({ date: -1 }),
-    ]);
-
-    const totalIncome = donations.reduce((sum, d) => sum + d.amount, 0);
-    const totalExpenses = expenses.reduce((sum, e) => sum + e.amount, 0);
-
-    // Income by type
-    const incomeByType = {};
-    donations.forEach((d) => {
-      const type = d.donationType || 'other';
-      incomeByType[type] = (incomeByType[type] || 0) + d.amount;
-    });
-
-    // Expenses by category
-    const expensesByCategory = {};
-    expenses.forEach((e) => {
-      expensesByCategory[e.category] = (expensesByCategory[e.category] || 0) + e.amount;
-    });
-
-    res.json({
-      totalIncome,
-      totalExpenses,
-      netBalance: totalIncome - totalExpenses,
-      incomeByType,
-      expensesByCategory,
-      donations,
-      expenses,
-    });
+    const report = await fetchReportData(req, startDate, endDate);
+    res.json(report);
   } catch (error) {
     console.error('Error fetching finance report:', error);
     res.status(500).json({ error: 'Failed to fetch finance report' });
+  }
+};
+
+export const getFinanceReportPdf = async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    const [report, org] = await Promise.all([
+      fetchReportData(req, startDate, endDate),
+      Organization.findById(req.organizationId).lean(),
+    ]);
+
+    const churchName = org?.churchName || 'Church';
+    const currency = org?.currency || 'GHS';
+    const periodLabel = startDate && endDate
+      ? `${new Date(startDate).toLocaleDateString()} — ${new Date(endDate).toLocaleDateString()}`
+      : 'All time';
+    const fileName = `finance-report-${startDate || 'all'}-to-${endDate || 'all'}.pdf`;
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+
+    const doc = new PDFDocument({ size: 'A4', margin: 40 });
+    doc.pipe(res);
+
+    // Letterhead
+    doc.fontSize(18).font('Helvetica-Bold').text(churchName, { align: 'center' });
+    doc.fontSize(14).font('Helvetica').text('Financial Report', { align: 'center' });
+    doc.fontSize(10).fillColor('#666666').text(periodLabel, { align: 'center' });
+    doc.fillColor('#000000');
+    doc.moveDown(1);
+
+    // Summary statement
+    doc.fontSize(11).font('Helvetica-Bold').text('Summary');
+    doc.font('Helvetica').fontSize(10);
+    doc.text(`Total Income: ${currency} ${report.totalIncome.toFixed(2)}`);
+    doc.text(`Total Expenses: ${currency} ${report.totalExpenses.toFixed(2)}`);
+    doc.font('Helvetica-Bold').text(`Net Balance: ${currency} ${report.netBalance.toFixed(2)}`);
+    doc.font('Helvetica');
+    doc.moveDown(1);
+
+    const drawBreakdownTable = (title, rows) => {
+      doc.fontSize(11).font('Helvetica-Bold').text(title);
+      doc.moveDown(0.3);
+
+      const colWidths = [350, 130];
+      const tableLeft = 40;
+      const rowHeight = 20;
+      let y = doc.y;
+
+      const drawRow = (cells, isHeader) => {
+        if (y + rowHeight > doc.page.height - 40) {
+          doc.addPage({ size: 'A4', margin: 40 });
+          y = 40;
+        }
+        doc.fontSize(9).font(isHeader ? 'Helvetica-Bold' : 'Helvetica');
+        doc.rect(tableLeft, y, colWidths.reduce((a, b) => a + b, 0), rowHeight)
+          .fill(isHeader ? '#f4f4f4' : '#ffffff')
+          .stroke('#dddddd');
+        doc.fillColor('#000000');
+        let x = tableLeft + 5;
+        cells.forEach((cell, i) => {
+          doc.text(String(cell), x, y + 5, { width: colWidths[i] - 10, lineBreak: false });
+          x += colWidths[i];
+        });
+        y += rowHeight;
+      };
+
+      drawRow(['Category', `Amount (${currency})`], true);
+      Object.entries(rows).forEach(([label, amount]) => drawRow([label, amount.toFixed(2)], false));
+
+      // Manual row drawing above leaves PDFKit's x cursor at the last cell's
+      // column instead of the page margin — reset both before the next
+      // untargeted .text() call (e.g. the next table's title) or it renders
+      // offset to the right instead of starting a new line.
+      doc.x = tableLeft;
+      doc.y = y;
+      doc.moveDown(1);
+    };
+
+    drawBreakdownTable('Income by Type', report.incomeByType);
+    drawBreakdownTable('Expenses by Category', report.expensesByCategory);
+
+    doc.end();
+  } catch (error) {
+    console.error('Error generating finance report PDF:', error);
+    res.status(500).json({ error: 'Failed to generate finance report PDF' });
   }
 };
 
@@ -883,6 +983,121 @@ export const deleteOfferingType = async (req, res) => {
   }
 };
 
+// ===== EXPENSE CATEGORIES (dynamic, per-branch, merchant-defined) =====
+
+const DEFAULT_EXPENSE_CATEGORIES = ['utilities', 'salaries', 'maintenance', 'supplies', 'transport', 'events', 'other'];
+
+export const getExpenseCategories = async (req, res) => {
+  try {
+    let categories = await ExpenseCategory.find(branchFilter(req)).sort({ createdAt: 1 });
+
+    if (categories.length === 0) {
+      const branchId = resolveCreateBranch(req);
+      if (!branchId) {
+        return res.status(400).json({ error: 'Branch is required' });
+      }
+      categories = await ExpenseCategory.insertMany(
+        DEFAULT_EXPENSE_CATEGORIES.map((name) => ({
+          organizationId: req.organizationId,
+          branchId,
+          name: name.charAt(0).toUpperCase() + name.slice(1),
+          isDefault: name === 'other',
+        }))
+      );
+    }
+
+    res.json(categories);
+  } catch (error) {
+    console.error('Error fetching expense categories:', error);
+    res.status(500).json({ error: 'Failed to fetch expense categories' });
+  }
+};
+
+export const createExpenseCategory = async (req, res) => {
+  try {
+    const { name } = req.body;
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Name is required' });
+    }
+
+    const branchId = resolveCreateBranch(req);
+    if (!branchId) {
+      return res.status(400).json({ error: 'Branch is required' });
+    }
+
+    const category = await ExpenseCategory.create({
+      organizationId: req.organizationId,
+      branchId,
+      name: name.trim(),
+    });
+
+    res.status(201).json(category);
+  } catch (error) {
+    console.error('Error creating expense category:', error.message, error.stack);
+    res.status(500).json({
+      error: 'Failed to create expense category',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+export const updateExpenseCategory = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, enabled } = req.body;
+
+    const category = await ExpenseCategory.findOne({ _id: id, ...branchFilter(req) });
+    if (!category) {
+      return res.status(404).json({ error: 'Expense category not found' });
+    }
+
+    if (enabled === false && category.enabled) {
+      const otherEnabledCount = await ExpenseCategory.countDocuments({
+        ...branchFilter(req),
+        _id: { $ne: id },
+        enabled: true,
+      });
+      if (otherEnabledCount === 0) {
+        return res.status(400).json({ error: 'Cannot disable the only active expense category' });
+      }
+    }
+
+    if (name !== undefined) category.name = name.trim();
+    if (enabled !== undefined) category.enabled = enabled;
+    await category.save();
+
+    res.json(category);
+  } catch (error) {
+    console.error('Error updating expense category:', error);
+    res.status(500).json({ error: 'Failed to update expense category' });
+  }
+};
+
+export const deleteExpenseCategory = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const category = await ExpenseCategory.findOne({ _id: id, ...branchFilter(req) });
+    if (!category) {
+      return res.status(404).json({ error: 'Expense category not found' });
+    }
+
+    const hasExpenses = await Expense.exists({ categoryId: id });
+    if (hasExpenses) {
+      return res.status(400).json({
+        error: 'Cannot delete a category that already has recorded expenses. Disable it instead.',
+      });
+    }
+
+    await ExpenseCategory.deleteOne({ _id: id });
+
+    res.json({ message: 'Expense category deleted' });
+  } catch (error) {
+    console.error('Error deleting expense category:', error);
+    res.status(500).json({ error: 'Failed to delete expense category' });
+  }
+};
+
 // ===== PROJECTS (mission/building/other funds with a fundraising goal) =====
 
 export const getProjects = async (req, res) => {
@@ -894,7 +1109,7 @@ export const getProjects = async (req, res) => {
       delete filter.branchId;
     }
 
-    const projects = await FundBucket.find(filter).sort({ createdAt: -1 }).lean();
+    const projects = await FundBucket.find(filter).populate('groupId', 'name').sort({ createdAt: -1 }).lean();
     const projectIds = projects.map((p) => p._id);
 
     const raised = await Donation.aggregate([
@@ -918,7 +1133,7 @@ export const getProjects = async (req, res) => {
 
 export const createProject = async (req, res) => {
   try {
-    const { name, description, targetAmount, targetDate } = req.body;
+    const { name, description, targetAmount, targetDate, groupId } = req.body;
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Name is required' });
     }
@@ -935,6 +1150,7 @@ export const createProject = async (req, res) => {
       description,
       targetAmount: targetAmount || null,
       targetDate: targetDate || null,
+      groupId: groupId || null,
     });
 
     res.status(201).json(project);
@@ -950,7 +1166,7 @@ export const createProject = async (req, res) => {
 export const updateProject = async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, description, targetAmount, targetDate, status, enabled } = req.body;
+    const { name, description, targetAmount, targetDate, status, enabled, groupId } = req.body;
 
     const filter = branchFilter(req);
     if (filter.branchId) {
@@ -969,6 +1185,7 @@ export const updateProject = async (req, res) => {
     if (targetDate !== undefined) project.targetDate = targetDate || null;
     if (status !== undefined) project.status = status;
     if (enabled !== undefined) project.enabled = enabled;
+    if (groupId !== undefined) project.groupId = groupId || null;
     await project.save();
 
     res.json(project);
@@ -978,9 +1195,122 @@ export const updateProject = async (req, res) => {
   }
 };
 
+// ===== PROJECT GROUPS (dynamic, per-branch, merchant-defined categories) =====
+
+export const getProjectGroups = async (req, res) => {
+  try {
+    let groups = await ProjectGroup.find(branchFilter(req)).sort({ createdAt: 1 });
+
+    if (groups.length === 0) {
+      const branchId = resolveCreateBranch(req);
+      if (!branchId) {
+        return res.status(400).json({ error: 'Branch is required' });
+      }
+      const defaultGroup = await ProjectGroup.create({
+        organizationId: req.organizationId,
+        branchId,
+        name: 'General',
+        isDefault: true,
+      });
+      groups = [defaultGroup];
+    }
+
+    res.json(groups);
+  } catch (error) {
+    console.error('Error fetching project groups:', error);
+    res.status(500).json({ error: 'Failed to fetch project groups' });
+  }
+};
+
+export const createProjectGroup = async (req, res) => {
+  try {
+    const { name } = req.body;
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Name is required' });
+    }
+
+    const branchId = resolveCreateBranch(req);
+    if (!branchId) {
+      return res.status(400).json({ error: 'Branch is required' });
+    }
+
+    const group = await ProjectGroup.create({
+      organizationId: req.organizationId,
+      branchId,
+      name: name.trim(),
+    });
+
+    res.status(201).json(group);
+  } catch (error) {
+    console.error('Error creating project group:', error.message, error.stack);
+    res.status(500).json({
+      error: 'Failed to create project group',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+export const updateProjectGroup = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, enabled } = req.body;
+
+    const group = await ProjectGroup.findOne({ _id: id, ...branchFilter(req) });
+    if (!group) {
+      return res.status(404).json({ error: 'Project group not found' });
+    }
+
+    if (enabled === false && group.enabled) {
+      const otherEnabledCount = await ProjectGroup.countDocuments({
+        ...branchFilter(req),
+        _id: { $ne: id },
+        enabled: true,
+      });
+      if (otherEnabledCount === 0) {
+        return res.status(400).json({ error: 'Cannot disable the only active project group' });
+      }
+    }
+
+    if (name !== undefined) group.name = name.trim();
+    if (enabled !== undefined) group.enabled = enabled;
+    await group.save();
+
+    res.json(group);
+  } catch (error) {
+    console.error('Error updating project group:', error);
+    res.status(500).json({ error: 'Failed to update project group' });
+  }
+};
+
+export const deleteProjectGroup = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const group = await ProjectGroup.findOne({ _id: id, ...branchFilter(req) });
+    if (!group) {
+      return res.status(404).json({ error: 'Project group not found' });
+    }
+
+    const hasProjects = await FundBucket.exists({ groupId: id });
+    if (hasProjects) {
+      return res.status(400).json({
+        error: 'Cannot delete a group that already has projects assigned. Disable it instead.',
+      });
+    }
+
+    await ProjectGroup.deleteOne({ _id: id });
+
+    res.json({ message: 'Project group deleted' });
+  } catch (error) {
+    console.error('Error deleting project group:', error);
+    res.status(500).json({ error: 'Failed to delete project group' });
+  }
+};
+
 export default {
   getFinanceOverview,
   getFinanceReport,
+  getFinanceReportPdf,
   getTransactions,
   getTransactionSummary,
   getTransactionById,
@@ -993,7 +1323,15 @@ export default {
   createOfferingType,
   updateOfferingType,
   deleteOfferingType,
+  getExpenseCategories,
+  createExpenseCategory,
+  updateExpenseCategory,
+  deleteExpenseCategory,
   getProjects,
   createProject,
   updateProject,
+  getProjectGroups,
+  createProjectGroup,
+  updateProjectGroup,
+  deleteProjectGroup,
 };
