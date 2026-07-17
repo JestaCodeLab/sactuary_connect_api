@@ -407,8 +407,8 @@ export const submitFinanceAccount = async (req, res) => {
     let financeAccount = await FinanceAccount.findOne({ organizationId, branchId });
 
     if (financeAccount) {
-      // Only allow update if status is rejected, pending (from revoke), or the original pending
-      // Don't allow resubmit if already approved or currently in submission process
+      // Only allow resubmission if rejected or revoked
+      // Don't allow resubmit if already approved or currently pending review
       if (!['rejected', 'pending', 'revoked'].includes(financeAccount.status)) {
         return res.status(400).json({
           error: `Cannot resubmit. Current status: ${financeAccount.status}`,

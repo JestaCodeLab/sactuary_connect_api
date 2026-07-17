@@ -1244,13 +1244,12 @@ export const revokeFinanceAccount = async (req, res) => {
 
     const actorId = req.user.userId;
 
-    // Revert account status back to pending
-    account.status = 'pending';
+    account.status = 'revoked';
     account.revokedAt = Date.now();
     account.revokedBy = actorId;
     account.revokedReason = revokedReason;
     account.statusHistory.push({
-      status: 'pending',
+      status: 'revoked',
       changedBy: actorId,
       notes: `Revoked by superadmin: ${revokedReason}`,
     });
@@ -1275,7 +1274,7 @@ export const revokeFinanceAccount = async (req, res) => {
     // TODO: Send email notification to organization admin about revocation
 
     res.json({
-      message: 'Finance account revoked and returned to pending status',
+      message: 'Finance account revoked',
       account: {
         _id: account._id,
         status: account.status,

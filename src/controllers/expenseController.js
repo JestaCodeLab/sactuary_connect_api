@@ -17,7 +17,7 @@ export const getAllExpenses = async (req, res) => {
 export const getExpenseById = async (req, res) => {
   try {
     const { id } = req.params;
-    const expense = await Expense.findById(id)
+    const expense = await Expense.findOne({ _id: id, ...branchFilter(req) })
       .populate('approvedBy', 'firstName lastName');
 
     if (!expense) {
@@ -89,8 +89,11 @@ export const updateExpense = async (req, res) => {
     delete updates.organizationId;
     delete updates.branchId;
 
-    const expense = await Expense.findByIdAndUpdate(id, updates, { new: true })
-      .populate('approvedBy', 'firstName lastName');
+    const expense = await Expense.findOneAndUpdate(
+      { _id: id, ...branchFilter(req) },
+      updates,
+      { new: true }
+    ).populate('approvedBy', 'firstName lastName');
 
     if (!expense) {
       return res.status(404).json({ error: 'Expense not found' });
@@ -106,7 +109,7 @@ export const updateExpense = async (req, res) => {
 export const deleteExpense = async (req, res) => {
   try {
     const { id } = req.params;
-    const expense = await Expense.findByIdAndDelete(id);
+    const expense = await Expense.findOneAndDelete({ _id: id, ...branchFilter(req) });
 
     if (!expense) {
       return res.status(404).json({ error: 'Expense not found' });
