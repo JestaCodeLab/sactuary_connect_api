@@ -7,7 +7,7 @@ import { checkDonationLimit } from '../utils/usageLimits.js';
 
 export const getAllDonations = async (req, res) => {
   try {
-    const { startDate, endDate, donationType, fundBucketId, page, limit } = req.query;
+    const { startDate, endDate, donationType, fundBucketId, paymentMethod, page, limit } = req.query;
 
     const filter = branchFilter(req);
     if (startDate || endDate) {
@@ -17,6 +17,7 @@ export const getAllDonations = async (req, res) => {
     }
     if (donationType) filter.donationType = donationType;
     if (fundBucketId) filter.fundBucketId = fundBucketId;
+    if (paymentMethod) filter.paymentMethod = paymentMethod;
 
     // Pagination is opt-in (page/limit present) so existing unpaginated
     // callers keep getting a plain array back.
@@ -30,6 +31,7 @@ export const getAllDonations = async (req, res) => {
       const monthFilter = { ...branchFilter(req), donationDate: { $gte: monthStart } };
       if (donationType) monthFilter.donationType = donationType;
       if (fundBucketId) monthFilter.fundBucketId = fundBucketId;
+      if (paymentMethod) monthFilter.paymentMethod = paymentMethod;
 
       const [donations, total, totals, monthTotals] = await Promise.all([
         Donation.find(filter)
@@ -100,11 +102,11 @@ export const getDonationById = async (req, res) => {
 
 export const createDonation = async (req, res) => {
   try {
-    const { donorId, amount, donationType, donationDate, paymentMethod, transactionId, notes, fundBucketId, offeringTypeId, eventId, donorName, donorEmail, donorPhone } = req.body;
+    const { donorId, donorType, amount, donationType, donationDate, paymentMethod, transactionId, notes, fundBucketId, offeringTypeId, eventId, donorName, donorEmail, donorPhone, chequeNumber, paymentAttachmentUrl, paymentAttachmentName, paidForMonth } = req.body;
 
     console.log('📥 createDonation received:', {
       donorId,
-      donorType: req.body.donorType,
+      donorType,
       donorName,
       amount,
       donationType,
@@ -112,6 +114,14 @@ export const createDonation = async (req, res) => {
 
     if (!amount || amount <= 0) {
       return res.status(400).json({ error: 'Amount must be greater than 0' });
+    }
+
+    if (paymentMethod === 'cheque' && !chequeNumber) {
+      return res.status(400).json({ error: 'Cheque number is required for cheque payments' });
+    }
+
+    if (paymentMethod === 'bank_transfer' && !paymentAttachmentUrl) {
+      return res.status(400).json({ error: 'A proof-of-transfer attachment is required for bank transfer payments' });
     }
 
     const branchId = resolveCreateBranch(req);
@@ -142,10 +152,15 @@ export const createDonation = async (req, res) => {
       fundBucketId: fundBucketId || undefined,
       offeringTypeId: offeringTypeId || undefined,
       eventId: eventId || undefined,
+      donorType: ['member', 'guest', 'collective'].includes(donorType) ? donorType : 'member',
+      paidForMonth: paidForMonth || undefined,
+      chequeNumber: paymentMethod === 'cheque' ? chequeNumber : undefined,
+      paymentAttachmentUrl: paymentMethod === 'bank_transfer' ? paymentAttachmentUrl : undefined,
+      paymentAttachmentName: paymentMethod === 'bank_transfer' ? paymentAttachmentName : undefined,
     };
 
-    // Handle donorId - accept if it exists and is not empty
-    if (donorId) {
+    // Handle donorId - accept if it exists and is not empty (never set for collective)
+    if (donorId && donationData.donorType !== 'collective') {
       const trimmedDonorId = typeof donorId === 'string' ? donorId.trim() : donorId;
       if (trimmedDonorId) {
         donationData.donorId = trimmedDonorId;
@@ -155,10 +170,12 @@ export const createDonation = async (req, res) => {
       console.log('⚠️ donorId is missing or falsy:', donorId);
     }
 
-    // Add donor info for guest donations
+    // Add donor info for guest donations, or the gathering description for collective ones
     if (donorName) donationData.donorName = donorName;
-    if (donorEmail) donationData.donorEmail = donorEmail;
-    if (donorPhone) donationData.donorPhone = donorPhone;
+    if (donationData.donorType === 'guest') {
+      if (donorEmail) donationData.donorEmail = donorEmail;
+      if (donorPhone) donationData.donorPhone = donorPhone;
+    }
 
     console.log('📝 Donation data before save:', JSON.stringify(donationData, null, 2));
 
@@ -214,6 +231,26 @@ export const updateDonation = async (req, res) => {
     delete updates._id;
     delete updates.organizationId;
     delete updates.branchId;
+
+    // Edit forms submit the whole record, including cheque/attachment fields
+    // left over from a payment method that's since been switched away from —
+    // strip whichever doesn't match the (possibly just-changed) paymentMethod.
+    if ('paymentMethod' in updates) {
+      if (updates.paymentMethod === 'cheque' && !updates.chequeNumber) {
+        return res.status(400).json({ error: 'Cheque number is required for cheque payments' });
+      }
+      if (updates.paymentMethod === 'bank_transfer' && !updates.paymentAttachmentUrl) {
+        return res.status(400).json({ error: 'A proof-of-transfer attachment is required for bank transfer payments' });
+      }
+      // Explicit null (not undefined) so it's actually written and clears
+      // any stale value from before the payment method was switched —
+      // undefined keys get silently dropped by the BSON serializer.
+      if (updates.paymentMethod !== 'cheque') updates.chequeNumber = null;
+      if (updates.paymentMethod !== 'bank_transfer') {
+        updates.paymentAttachmentUrl = null;
+        updates.paymentAttachmentName = null;
+      }
+    }
 
     const donation = await Donation.findOneAndUpdate(
       { _id: id, ...branchFilter(req) },

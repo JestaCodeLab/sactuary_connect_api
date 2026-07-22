@@ -35,13 +35,13 @@ export const getCreditsBalance = async (req, res) => {
   }
 };
 
-// Get live BMS Africa platform balance
+// Get live FlockText wallet balance
 export const getBmsBalance = async (req, res) => {
   try {
     const result = await smsService.checkBalance();
     res.json(result);
   } catch (error) {
-    console.error('BMS balance check error:', error);
+    console.error('FlockText balance check error:', error);
     res.status(500).json({ error: error.message });
   }
 };
@@ -1019,7 +1019,7 @@ export const registerSenderId = async (req, res) => {
       return res.status(400).json({ error: 'Sender name and purpose are required' });
     }
 
-    // Call BMS service
+    // Call FlockText service
     const result = await smsService.registerSenderId({ senderName, purpose });
 
     if (!result.success) {
@@ -1063,18 +1063,24 @@ export const checkSenderIdStatus = async (req, res) => {
       return res.status(400).json({ error: 'Sender name is required or organization has no registered sender ID' });
     }
 
-    // Call BMS service
+    // Call FlockText service
     const result = await smsService.checkSenderIdStatus({ senderName: nameToCheck });
 
     if (!result.success) {
       return res.status(400).json({ error: result.error });
     }
 
-    // Update organization with live status from BMS
+    // Update organization with live status from FlockText.
+    // Organization.smsConfig.senderIdStatus only accepts pending/approved/rejected,
+    // so FlockText's pending_review/processing sub-states both collapse to 'pending'.
+    const normalizedStatus = ['pending_review', 'processing'].includes(result.status)
+      ? 'pending'
+      : result.status.toLowerCase();
+
     if (organization) {
       organization.smsConfig = organization.smsConfig || {};
       organization.smsConfig.senderId = nameToCheck;
-      organization.smsConfig.senderIdStatus = result.status.toLowerCase();
+      organization.smsConfig.senderIdStatus = normalizedStatus;
       await organization.save();
     }
 
@@ -1094,7 +1100,7 @@ export const checkSenderIdStatus = async (req, res) => {
 export const getSystemConfig = async (req, res) => {
   try {
     res.json({
-      defaultSenderId: process.env.BMS_SENDER_ID || 'Sanctuary'
+      defaultSenderId: process.env.FLOCKTXT_SENDER_ID || 'Sanctuary'
     });
   } catch (error) {
     console.error('Get system config error:', error);

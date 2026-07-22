@@ -1118,10 +1118,20 @@ export const getProjects = async (req, res) => {
     ]);
     const raisedById = new Map(raised.map((r) => [String(r._id), r]));
 
+    // Only approved expenses count as real spend, matching how the Expenses
+    // page and Overview stats treat pending/rejected ones as not-yet-spent.
+    const expensed = await Expense.aggregate([
+      { $match: { projectId: { $in: projectIds }, status: 'approved' } },
+      { $group: { _id: '$projectId', expensedAmount: { $sum: '$amount' }, expenseCount: { $sum: 1 } } },
+    ]);
+    const expensedById = new Map(expensed.map((e) => [String(e._id), e]));
+
     const result = projects.map((p) => ({
       ...p,
       raisedAmount: raisedById.get(String(p._id))?.raisedAmount || 0,
       donationCount: raisedById.get(String(p._id))?.donationCount || 0,
+      expensedAmount: expensedById.get(String(p._id))?.expensedAmount || 0,
+      expenseCount: expensedById.get(String(p._id))?.expenseCount || 0,
     }));
 
     res.json(result);

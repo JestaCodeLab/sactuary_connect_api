@@ -7,10 +7,12 @@ export const getAllExpenses = async (req, res) => {
   try {
     const filter = branchFilter(req);
     if (req.query.status) filter.status = req.query.status;
+    if (req.query.projectId) filter.projectId = req.query.projectId;
 
     const expenses = await Expense.find(filter)
       .populate('approvedBy', 'firstName lastName')
       .populate('submittedBy', 'firstName lastName')
+      .populate('projectId', 'name')
       .sort({ date: -1 });
     res.json(expenses);
   } catch (error) {
@@ -24,7 +26,8 @@ export const getExpenseById = async (req, res) => {
     const { id } = req.params;
     const expense = await Expense.findOne({ _id: id, ...branchFilter(req) })
       .populate('approvedBy', 'firstName lastName')
-      .populate('submittedBy', 'firstName lastName');
+      .populate('submittedBy', 'firstName lastName')
+      .populate('projectId', 'name');
 
     if (!expense) {
       return res.status(404).json({ error: 'Expense not found' });
@@ -39,7 +42,7 @@ export const getExpenseById = async (req, res) => {
 
 export const createExpense = async (req, res) => {
   try {
-    const { amount, category, categoryId, description, date, vendor, receiptUrl, paymentMethod } = req.body;
+    const { amount, category, categoryId, description, date, vendor, receiptUrl, paymentMethod, projectId } = req.body;
 
     if (!amount || (!category && !categoryId) || !date) {
       return res.status(400).json({ error: 'Amount, category, and date are required' });
@@ -72,6 +75,7 @@ export const createExpense = async (req, res) => {
       vendor,
       receiptUrl,
       paymentMethod,
+      projectId: projectId || undefined,
       status: 'pending',
       submittedBy: req.user.userId,
       statusHistory: [
@@ -190,11 +194,19 @@ export const updateExpense = async (req, res) => {
       updates.category = categoryDoc.name;
     }
 
+    // 'projectId' in updates covers both a real id and '' (cleared back to
+    // "No Project") — an empty string would otherwise fail ObjectId casting.
+    if ('projectId' in updates) {
+      updates.projectId = updates.projectId || null;
+    }
+
     const expense = await Expense.findOneAndUpdate(
       { _id: id, ...branchFilter(req) },
       updates,
       { new: true }
-    ).populate('approvedBy', 'firstName lastName');
+    )
+      .populate('approvedBy', 'firstName lastName')
+      .populate('projectId', 'name');
 
     if (!expense) {
       return res.status(404).json({ error: 'Expense not found' });

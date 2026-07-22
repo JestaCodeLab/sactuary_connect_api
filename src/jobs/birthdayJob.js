@@ -107,7 +107,7 @@ async function sendBirthdaySMS() {
             .replace(/\{\{age\}\}/g, age.toString())
             .replace(/\{\{churchName\}\}/g, organization.churchName || '');
 
-          // Send SMS via BMS Africa
+          // Send SMS via FlockText
           const result = await smsService.sendSingle({
             phone: member.phone,
             message,

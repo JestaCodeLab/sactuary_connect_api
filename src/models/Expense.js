@@ -31,6 +31,12 @@ const expenseSchema = new mongoose.Schema({
   },
   vendor: String,
   receiptUrl: String,
+  // Optional link to the project (FundBucket) this expense was spent against
+  projectId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'FundBucket',
+    default: null,
+  },
   status: {
     type: String,
     enum: ['pending', 'approved', 'rejected'],

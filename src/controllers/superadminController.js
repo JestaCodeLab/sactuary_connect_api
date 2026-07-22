@@ -894,7 +894,7 @@ export const adjustSmsCredits = async (req, res) => {
   res.json({ message: 'SMS credits updated', balance: credit.balance });
 };
 
-// Get stored BMS platform balance (last synced from a send response)
+// Get stored FlockText platform balance (last synced from a send response)
 export const getBmsPlatformBalance = async (req, res) => {
   try {
     const stored = await PlatformConfig.get('bms_balance');
@@ -908,7 +908,7 @@ export const getBmsPlatformBalance = async (req, res) => {
   }
 };
 
-// Send a test SMS to SUPERADMIN_PHONE, capture credit_left, persist it
+// Send a test SMS to SUPERADMIN_PHONE, capture the FlockText wallet balance, persist it
 export const checkBmsBalance = async (req, res) => {
   const phone = process.env.SUPERADMIN_PHONE;
   if (!phone) return res.status(500).json({ error: 'SUPERADMIN_PHONE not set in .env' });
