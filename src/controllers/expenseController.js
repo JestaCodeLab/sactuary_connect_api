@@ -5,9 +5,15 @@ import { branchFilter, resolveCreateBranch } from '../utils/branchQuery.js';
 
 export const getAllExpenses = async (req, res) => {
   try {
+    const { startDate, endDate } = req.query;
     const filter = branchFilter(req);
     if (req.query.status) filter.status = req.query.status;
     if (req.query.projectId) filter.projectId = req.query.projectId;
+    if (startDate || endDate) {
+      filter.date = {};
+      if (startDate) filter.date.$gte = new Date(startDate);
+      if (endDate) filter.date.$lte = new Date(endDate);
+    }
 
     const expenses = await Expense.find(filter)
       .populate('approvedBy', 'firstName lastName')

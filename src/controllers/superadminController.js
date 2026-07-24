@@ -894,7 +894,7 @@ export const adjustSmsCredits = async (req, res) => {
   res.json({ message: 'SMS credits updated', balance: credit.balance });
 };
 
-// Get stored FlockText platform balance (last synced from a send response)
+// Get stored FlockText platform balance (last synced from a checkBalance() call)
 export const getBmsPlatformBalance = async (req, res) => {
   try {
     const stored = await PlatformConfig.get('bms_balance');
@@ -908,30 +908,18 @@ export const getBmsPlatformBalance = async (req, res) => {
   }
 };
 
-// Send a test SMS to SUPERADMIN_PHONE, capture the FlockText wallet balance, persist it
+// Check the live FlockText wallet balance via the dedicated balance endpoint and persist it
 export const checkBmsBalance = async (req, res) => {
-  const phone = process.env.SUPERADMIN_PHONE;
-  if (!phone) return res.status(500).json({ error: 'SUPERADMIN_PHONE not set in .env' });
-
   try {
-    const result = await smsService.sendSingleFree({
-      phone,
-      message: 'Welcome to Sanctuary Connect.',
-      category: 'general',
-      metadata: { isBmsBalanceCheck: true },
-    });
-
+    const result = await smsService.checkBalance();
     const stored = await PlatformConfig.get('bms_balance');
 
     res.json({
       success: result.success,
-      balance: stored?.balance ?? null,
+      balance: stored?.balance ?? result.balance ?? null,
       updatedAt: stored?.updatedAt ?? null,
-      smsSent: result.success,
-      campaignId: result.campaignId,
     });
   } catch (error) {
-    const status = error.response?.status;
     const detail = error.response?.data?.message || error.response?.data?.error || error.message;
     res.status(500).json({ error: detail || error.message });
   }
