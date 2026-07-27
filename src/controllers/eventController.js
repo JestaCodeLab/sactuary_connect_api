@@ -17,8 +17,12 @@ export const getAllEvents = async (req, res) => {
     const filter = branchFilter(req);
 
     // Date range filters from query params
-    const { startDate, endDate, status } = req.query;
-    
+    const { startDate, endDate, status, departmentId } = req.query;
+
+    if (departmentId) {
+      filter.departmentId = departmentId;
+    }
+
     if (startDate) {
       filter.startDate = { ...filter.startDate, $gte: new Date(startDate) };
     }
@@ -121,10 +125,27 @@ export const getEventById = async (req, res) => {
 
 export const createEvent = async (req, res) => {
   try {
-    const { title, description, eventType, startDate, endDate, location, organizerId, maxCapacity, isRecurring, recurrencePattern, recurrenceDay, recurrenceEndDate } = req.body;
+    const { title, description, eventType, startDate, endDate, location, organizerId, maxCapacity, isRecurring, recurrencePattern, recurrenceDay, recurrenceEndDate, departmentId, reminders } = req.body;
 
     if (!title || !startDate || !endDate) {
       return res.status(400).json({ error: 'Title, start date, and end date are required' });
+    }
+
+    let cleanReminders;
+    if (Array.isArray(reminders)) {
+      for (const reminder of reminders) {
+        if (!Number.isFinite(reminder.offsetMinutes) || reminder.offsetMinutes < 0) {
+          return res.status(400).json({ error: 'Each reminder needs a valid offset in minutes' });
+        }
+        if (!reminder.message && !reminder.templateId) {
+          return res.status(400).json({ error: 'Each reminder needs a message or a template' });
+        }
+      }
+      cleanReminders = reminders.map((r) => ({
+        offsetMinutes: r.offsetMinutes,
+        message: r.message || undefined,
+        templateId: r.templateId || undefined,
+      }));
     }
 
     const branchId = resolveCreateBranch(req);
@@ -154,11 +175,13 @@ export const createEvent = async (req, res) => {
       location,
       organizerId: organizerId || req.user.userId,
       maxCapacity,
+      departmentId: departmentId || undefined,
       isRecurring: isRecurring || false,
       recurrencePattern,
       recurrenceDay,
       recurrenceEndDate,
       usesServiceCodes: isRecurring || false, // Service codes enabled for recurring events
+      reminders: cleanReminders,
     });
 
     await event.save();

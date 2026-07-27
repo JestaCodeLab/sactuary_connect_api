@@ -38,11 +38,15 @@ export const getDepartmentById = async (req, res) => {
 
 export const createDepartment = async (req, res) => {
   try {
-    const { organizationId, branchId, name, description, leaderId } = req.body;
+    const { organizationId, branchId, name, description, leaderId, tags } = req.body;
 
     if (!name || !branchId) {
       return res.status(400).json({ error: 'Department name and branch are required' });
     }
+
+    const cleanTags = Array.isArray(tags)
+      ? [...new Set(tags.map((t) => String(t).trim()).filter(Boolean))].slice(0, 5)
+      : [];
 
     // Check department limit
     const limitCheck = await checkDepartmentLimit(req.organizationId);
@@ -61,6 +65,7 @@ export const createDepartment = async (req, res) => {
       name,
       description,
       leaderId: leaderId && leaderId.trim() ? leaderId : null,
+      tags: cleanTags,
     });
 
     const populated = await Department.findById(department._id)
@@ -81,6 +86,12 @@ export const updateDepartment = async (req, res) => {
     delete updates._id;
     delete updates.organizationId;
     delete updates.members;
+
+    if (updates.tags !== undefined) {
+      updates.tags = Array.isArray(updates.tags)
+        ? [...new Set(updates.tags.map((t) => String(t).trim()).filter(Boolean))].slice(0, 5)
+        : [];
+    }
 
     const department = await Department.findByIdAndUpdate(id, updates, { new: true })
       .populate('branchId', 'name')

@@ -562,8 +562,8 @@ export const sendToBranch = async (req, res) => {
 
     // Count branch members
     const memberCount = await Member.countDocuments({
-      branch: branchId,
-      phoneNumber: { $exists: true, $ne: '' }
+      branchId,
+      phone: { $exists: true, $ne: '' }
     });
 
     // Check SMS credits
@@ -623,8 +623,8 @@ export const sendToDepartment = async (req, res) => {
 
     // Count department members
     const memberCount = await Member.countDocuments({
-      department: departmentId,
-      phoneNumber: { $exists: true, $ne: '' }
+      departments: departmentId,
+      phone: { $exists: true, $ne: '' }
     });
 
     // Check SMS credits
@@ -681,8 +681,8 @@ export const sendToAllMembers = async (req, res) => {
 
     // Count all organization members
     const memberCount = await Member.countDocuments({
-      organization: merchantId,
-      phoneNumber: { $exists: true, $ne: '' }
+      organizationId: merchantId,
+      phone: { $exists: true, $ne: '' }
     });
 
     // Check SMS credits
@@ -905,18 +905,18 @@ export const getAvailableMembers = async (req, res) => {
     const branchId = req.user.currentBranch;
 
     const query = {
-      merchant: merchantId,
-      status: 'active',
+      organizationId: merchantId,
+      memberStatus: 'active',
       phone: { $exists: true, $ne: '' }
     };
 
     if (branchId) {
-      query.branch = branchId;
+      query.branchId = branchId;
     }
 
     const members = await Member.find(query)
-      .select('firstName lastName phone email department')
-      .populate('department', 'name')
+      .select('firstName lastName phone email departments')
+      .populate('departments', 'name')
       .lean();
 
     res.json({

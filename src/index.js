@@ -11,6 +11,7 @@ import { startRecurringQRJob } from './jobs/recurringQRJob.js';
 import { initBirthdayJob } from './jobs/birthdayJob.js';
 import { initServiceCodeGenerationJob } from './jobs/serviceCodeGenerationJob.js';
 import { initShepherdAlertJob } from './jobs/shepherdAlertJob.js';
+import { initEventReminderJob } from './jobs/eventReminderJob.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -103,6 +104,9 @@ const startServer = async () => {
 
     // Start shepherd alert automation job (8:00 AM daily)
     initShepherdAlertJob();
+
+    // Start event reminder automation job (every 15 minutes)
+    initEventReminderJob();
 
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);

@@ -34,6 +34,10 @@ const eventSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Branch',
   },
+  departmentId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Department',
+  },
   isRecurring: {
     type: Boolean,
     default: false,
@@ -73,6 +77,21 @@ const eventSchema = new mongoose.Schema({
     type: Boolean,
     default: false, // Set to true automatically if event is recurring
   },
+  reminders: [{
+    offsetMinutes: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
+    message: String,
+    templateId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'SmsTemplate',
+    },
+    // Guards against re-sending the same reminder for the same occurrence
+    // (recurring events have a new occurrence to remind about each time).
+    lastSentOccurrence: Date,
+  }],
   createdAt: {
     type: Date,
     default: Date.now,
