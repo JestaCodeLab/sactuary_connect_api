@@ -4,6 +4,7 @@ import Transaction from '../models/Transaction.js';
 import { branchFilter, resolveCreateBranch } from '../utils/branchQuery.js';
 import resend, { hasEmailConfig, EMAIL_FROM } from '../config/email.js';
 import { checkDonationLimit } from '../utils/usageLimits.js';
+import smsService from '../services/smsService.js';
 
 export const getAllDonations = async (req, res) => {
   try {
@@ -386,14 +387,33 @@ export const sendReceipt = async (req, res) => {
 
       res.json({ message: `Receipt sent to ${recipientEmail}` });
     } else if (channel === 'sms') {
-      // SMS would require SMS gateway integration
-      res.status(501).json({ error: 'SMS receipts are not yet available. Coming soon.' });
+      const recipientPhone = donation.donorId.phone;
+      if (!recipientPhone) {
+        return res.status(400).json({ error: 'Donor does not have a phone number' });
+      }
+
+      const message = `Thank you ${donorName}! ${churchName} received your ${donation.donationType || 'donation'} of GHS ${amount} on ${date}. God bless you.`;
+
+      const result = await smsService.sendSingle({
+        phone: recipientPhone,
+        message,
+        merchantId: req.organizationId,
+        userId: req.user?.userId,
+        category: 'thank_you',
+        metadata: { recipientName: donorName, memberId: donation.donorId._id },
+      });
+
+      if (!result.success) {
+        return res.status(502).json({ error: 'SMS receipt could not be delivered. Please try again.' });
+      }
+
+      res.json({ message: `Receipt sent to ${recipientPhone}` });
     } else {
       res.status(400).json({ error: 'Invalid channel. Use "email" or "sms".' });
     }
   } catch (error) {
     console.error('Error sending receipt:', error);
-    res.status(500).json({ error: 'Failed to send receipt' });
+    res.status(500).json({ error: error.message || 'Failed to send receipt' });
   }
 };
 

@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import ShepherdAlert from '../models/ShepherdAlert.js';
 import ShepherdAlertLog from '../models/ShepherdAlertLog.js';
 import AttendanceRecord from '../models/AttendanceRecord.js';
@@ -274,60 +275,98 @@ export const getShepherdAlertLogs = async (req, res) => {
 
 /**
  * Helper function to execute a shepherd alert check
- * Counts absences per member per event and triggers SMS if threshold is met
+ * Counts absences per member across distinct services held in the lookback
+ * window (org/branch-scoped) and triggers SMS if the threshold is met
  */
 async function executeShepherdAlertCheck(alert, organizationId) {
-  const logs = [];
   const lookbackStart = new Date();
   lookbackStart.setDate(lookbackStart.getDate() - alert.lookbackPeriodDays);
+  const checkPeriodEnd = new Date();
 
   try {
-    // Get ALL members in the organization
-    const allMembers = await Member.find({
-      organizationId,
-    }).lean();
+    const matchStage = {
+      organizationId: new mongoose.Types.ObjectId(organizationId),
+      createdAt: { $gte: lookbackStart },
+    };
+    if (alert.branchId) {
+      matchStage.branchId = new mongoose.Types.ObjectId(alert.branchId);
+    }
 
-    // For each member, count recent absences
-    for (const member of allMembers) {
-      // Get all events in the lookback period where this member was marked as present
-      const attendanceCount = await AttendanceRecord.countDocuments({
-        memberId: member._id,
-        createdAt: { $gte: lookbackStart },
-      });
+    // A "service" is identified by its event, plus the occurrence date for
+    // recurring events, so each occurrence (e.g. each Sunday) counts separately.
+    const occurrenceKey = {
+      $concat: [
+        { $toString: '$eventId' },
+        '_',
+        { $dateToString: { format: '%Y-%m-%d', date: '$occurrenceDate', onNull: 'single' } },
+      ],
+    };
 
-      // Get all events in the lookback period (should be much larger than attendance)
-      const totalEventsInPeriod = await AttendanceRecord.countDocuments({
-        createdAt: { $gte: lookbackStart },
-      });
+    // Every distinct service held in the lookback window (org/branch-scoped)
+    const occurrenceDocs = await AttendanceRecord.aggregate([
+      { $match: matchStage },
+      { $group: { _id: occurrenceKey } },
+    ]);
+    const totalOccurrences = occurrenceDocs.length;
 
-      // Calculate absences (approximate)
-      const absenceCount = Math.max(0, totalEventsInPeriod - attendanceCount);
+    // Nothing to measure attendance against yet - skip rather than firing false alerts
+    if (totalOccurrences === 0) {
+      alert.lastCheckAt = new Date();
+      await alert.save();
+      return [];
+    }
 
-      // Create log entry
-      const log = new ShepherdAlertLog({
+    // Per-member count of distinct services they personally attended
+    const attendanceDocs = await AttendanceRecord.aggregate([
+      { $match: { ...matchStage, memberId: { $ne: null } } },
+      { $group: { _id: { memberId: '$memberId', occurrence: occurrenceKey } } },
+      { $group: { _id: '$_id.memberId', attendedCount: { $sum: 1 } } },
+    ]);
+    const attendanceByMember = new Map(
+      attendanceDocs.map(doc => [String(doc._id), doc.attendedCount])
+    );
+
+    const memberFilter = { organizationId };
+    if (alert.branchId) memberFilter.branchId = alert.branchId;
+    const members = await Member.find(memberFilter).lean();
+
+    const logsToInsert = [];
+
+    for (const member of members) {
+      const attendedCount = attendanceByMember.get(String(member._id)) || 0;
+      const absenceCount = Math.max(0, totalOccurrences - attendedCount);
+      const memberName = `${member.firstName} ${member.lastName}`;
+
+      const logData = {
         organizationId,
         shepherdAlertId: alert._id,
         memberId: member._id,
-        memberName: `${member.firstName} ${member.lastName}`,
+        memberName,
         memberPhone: member.phone,
         absenceCount,
         absenceThreshold: alert.absenceThreshold,
         lookbackPeriodDays: alert.lookbackPeriodDays,
         checkPeriodStart: lookbackStart,
-        checkPeriodEnd: new Date(),
-      });
+        checkPeriodEnd,
+        triggerred: false,
+        smsAttempted: false,
+        smsSent: false,
+        recipientsNotified: [],
+      };
 
       // Check if threshold is met
       if (absenceCount >= alert.absenceThreshold) {
-        log.triggerred = true;
+        logData.triggerred = true;
+        logData.smsMessage = `Attendance Alert: ${memberName} has been absent ${absenceCount} times in the last ${alert.lookbackPeriodDays} days.`;
 
         // Send SMS to each shepherd
         const smsResults = [];
         for (const shepherd of alert.shepherds) {
+          logData.smsAttempted = true;
           try {
             const smsResult = await smsService.sendShepherdAlertSms(
               shepherd.phoneNumber,
-              `${member.firstName} ${member.lastName}`,
+              memberName,
               absenceCount,
               alert.lookbackPeriodDays,
               organizationId
@@ -340,13 +379,15 @@ async function executeShepherdAlertCheck(alert, organizationId) {
             });
 
             if (smsResult.success) {
-              log.smsSent = true;
-              log.smsReference = smsResult.reference;
+              logData.smsSent = true;
+              logData.smsReference = smsResult.reference;
             } else {
+              logData.error = smsResult.error;
               console.warn(`Failed to send shepherd alert SMS: ${smsResult.error}`);
             }
           } catch (shepherdError) {
             console.error(`Error sending SMS to shepherd ${shepherd.phoneNumber}:`, shepherdError);
+            logData.error = shepherdError.message;
             smsResults.push({
               memberId: shepherd.memberId,
               phoneNumber: shepherd.phoneNumber,
@@ -355,25 +396,28 @@ async function executeShepherdAlertCheck(alert, organizationId) {
           }
         }
 
-        log.recipientsNotified = smsResults;
+        logData.recipientsNotified = smsResults;
       }
 
-      await log.save();
-      logs.push(log);
+      logsToInsert.push(logData);
     }
 
-    // Update last check time
+    const savedLogs = logsToInsert.length > 0 ? await ShepherdAlertLog.insertMany(logsToInsert) : [];
+
+    // Update last check time and stats
     alert.lastCheckAt = new Date();
-    alert.totalAlertsTriggered += logs.filter(l => l.triggerred).length;
-    alert.smsSentCount += logs.filter(l => l.smsSent).length;
+    alert.totalAlertsTriggered += savedLogs.filter(l => l.triggerred).length;
+    alert.smsSentCount += savedLogs.filter(l => l.smsSent).length;
     await alert.save();
 
-    return logs;
+    return savedLogs;
   } catch (error) {
     console.error('Error executing shepherd alert check:', error);
     throw error;
   }
 }
+
+export { executeShepherdAlertCheck };
 
 export default {
   getShepherdAlerts,
