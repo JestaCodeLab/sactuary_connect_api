@@ -11,6 +11,30 @@ import { computeOccurrences, getNextOccurrence, getCurrentOccurrence } from '../
 import { checkEventLimit } from '../utils/usageLimits.js';
 import { serviceCodeService } from '../services/serviceCodeService.js';
 
+// Generates the initial QR code at event creation time, so a QR already
+// exists the moment an admin opens the event's detail page. Mirrors the
+// non-existing-token branch of generateQRCode below (which additionally
+// handles regenerating/reusing tokens for events that already have one).
+async function buildQrCode(event) {
+  const token = uuidv4();
+  const expiresAt = event.isRecurring
+    ? null
+    : (() => {
+        const d = new Date(event.endDate);
+        d.setHours(d.getHours() + 2);
+        return d;
+      })();
+
+  const checkInUrl = `${process.env.CLIENT_URL || 'https://app.sanctuaryconnect.org'}/check-in/${token}`;
+  const dataUrl = await QRCode.toDataURL(checkInUrl, {
+    errorCorrectionLevel: 'M',
+    width: 400,
+    margin: 2,
+  });
+
+  return { token, dataUrl, expiresAt, occurrenceDate: null, generatedAt: new Date() };
+}
+
 export const getAllEvents = async (req, res) => {
   try {
     const now = new Date();
@@ -191,6 +215,10 @@ export const createEvent = async (req, res) => {
       usesServiceCodes: isRecurring || false, // Service codes enabled for recurring events
       reminders: cleanReminders,
     });
+
+    // Generate the check-in QR code up front so it's already available the
+    // first time an admin opens the event's detail page.
+    event.qrCode = await buildQrCode(event);
 
     await event.save();
 
