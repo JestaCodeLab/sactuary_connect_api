@@ -10,12 +10,15 @@ import { branchFilter, resolveCreateBranch } from '../utils/branchQuery.js';
 import { computeOccurrences, getNextOccurrence, getCurrentOccurrence } from '../utils/occurrenceHelper.js';
 import { checkEventLimit } from '../utils/usageLimits.js';
 import { serviceCodeService } from '../services/serviceCodeService.js';
+import { assertClientUrlMatchesDatabase } from '../utils/urlSafety.js';
 
 // Generates the initial QR code at event creation time, so a QR already
 // exists the moment an admin opens the event's detail page. Mirrors the
 // non-existing-token branch of generateQRCode below (which additionally
 // handles regenerating/reusing tokens for events that already have one).
 async function buildQrCode(event) {
+  assertClientUrlMatchesDatabase(process.env.CLIENT_URL, process.env.MONGODB_URI);
+
   const token = uuidv4();
   const expiresAt = event.isRecurring
     ? null
@@ -451,6 +454,8 @@ export const generateQRCode = async (req, res) => {
     if (!event) {
       return res.status(404).json({ error: 'Event not found' });
     }
+
+    assertClientUrlMatchesDatabase(process.env.CLIENT_URL, process.env.MONGODB_URI);
 
     let token = event.qrCode?.token;
     let expiresAt = null;
