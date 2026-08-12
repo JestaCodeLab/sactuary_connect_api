@@ -12,6 +12,7 @@ import { initBirthdayJob } from './jobs/birthdayJob.js';
 import { initServiceCodeGenerationJob } from './jobs/serviceCodeGenerationJob.js';
 import { initShepherdAlertJob } from './jobs/shepherdAlertJob.js';
 import { initEventReminderJob } from './jobs/eventReminderJob.js';
+import { startSmsDeliveryStatusJob } from './jobs/smsDeliveryStatusJob.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -107,6 +108,9 @@ const startServer = async () => {
 
     // Start event reminder automation job (every 15 minutes)
     initEventReminderJob();
+
+    // Start SMS delivery status polling job (every 5 minutes)
+    startSmsDeliveryStatusJob();
 
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);

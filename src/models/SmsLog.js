@@ -145,21 +145,48 @@ smsLogSchema.virtual('deliveryRate').get(function() {
   return (this.successfulDeliveries / this.totalRecipients) * 100;
 });
 
-// Method to update recipient status
+// Recompute successfulDeliveries/failedDeliveries/pendingDeliveries and
+// overallStatus from the recipients' current statuses. Called after mutating
+// recipient status(es) so counts always reflect final state rather than
+// being incremented — safe to call repeatedly (e.g. re-polling a provider
+// for status that hasn't changed) without double-counting.
+smsLogSchema.methods.recalculateStatus = function() {
+  const statuses = this.recipients.map(r => r.status);
+
+  this.successfulDeliveries = statuses.filter(s => s === 'delivered').length;
+  this.failedDeliveries = statuses.filter(s => s === 'failed' || s === 'undelivered').length;
+  this.pendingDeliveries = statuses.filter(s => s === 'pending' || s === 'submitted').length;
+
+  const anyDelivered = statuses.some(s => s === 'delivered');
+  const anyFailed = statuses.some(s => s === 'failed' || s === 'undelivered');
+
+  if (statuses.length > 0 && statuses.every(s => s === 'delivered')) {
+    this.overallStatus = 'delivered';
+  } else if (statuses.length > 0 && statuses.every(s => s === 'failed' || s === 'undelivered')) {
+    this.overallStatus = 'failed';
+  } else if (anyDelivered && anyFailed) {
+    this.overallStatus = 'partial';
+  }
+  // Otherwise (all still pending/submitted, or a mix without any confirmed
+  // delivered/failed yet) leave overallStatus as-is — it was already set to
+  // 'submitted' at send time and there's nothing more definite to report.
+
+  return this;
+};
+
+// Method to update a single recipient's status. Pass { skipSave: true } when
+// updating multiple recipients in a loop so callers can save once at the end
+// instead of once per recipient.
 smsLogSchema.methods.updateRecipientStatus = async function(phoneNumber, status, additionalData = {}) {
   const recipient = this.recipients.find(r => r.phoneNumber === phoneNumber);
-  
+
   if (recipient) {
     recipient.status = status;
-    
+
     if (status === 'delivered') {
-      recipient.deliveredAt = new Date();
-      this.successfulDeliveries = (this.successfulDeliveries || 0) + 1;
-    } else if (status === 'failed' || status === 'undelivered') {
-      this.failedDeliveries = (this.failedDeliveries || 0) + 1;
-      if (additionalData.failureReason) {
-        recipient.failureReason = additionalData.failureReason;
-      }
+      recipient.deliveredAt = additionalData.deliveredAt || new Date();
+    } else if ((status === 'failed' || status === 'undelivered') && additionalData.failureReason) {
+      recipient.failureReason = additionalData.failureReason;
     }
 
     if (additionalData.providerMessageId) {
@@ -170,17 +197,11 @@ smsLogSchema.methods.updateRecipientStatus = async function(phoneNumber, status,
       recipient.deliveryReport = additionalData.deliveryReport;
     }
 
-    // Update overall status
-    const statuses = this.recipients.map(r => r.status);
-    if (statuses.every(s => s === 'delivered')) {
-      this.overallStatus = 'delivered';
-    } else if (statuses.every(s => s === 'failed' || s === 'undelivered')) {
-      this.overallStatus = 'failed';
-    } else if (statuses.some(s => s === 'delivered') && statuses.some(s => s === 'failed' || s === 'undelivered')) {
-      this.overallStatus = 'partial';
-    }
+    this.recalculateStatus();
 
-    await this.save();
+    if (!additionalData.skipSave) {
+      await this.save();
+    }
   }
 
   return this;
