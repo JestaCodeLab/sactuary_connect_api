@@ -18,6 +18,7 @@ import {
 import { authenticateToken, authorizeRole } from '../middleware/auth.js';
 import { resolveBranchContext } from '../middleware/branchContext.js';
 import { requireFeature } from '../middleware/featureGate.js';
+import { publicCheckInLimiter } from '../middleware/rateLimiter.js';
 
 const router = express.Router();
 
@@ -27,7 +28,7 @@ router.get('/event/:eventId/records', authenticateToken, resolveBranchContext, r
 router.get('/event/:eventId/export', authenticateToken, resolveBranchContext, requireFeature('attendance_tracking'), exportEventAttendance);
 
 // Check-in routes (QR check-in is public for guests/members)
-router.post('/check-in/qr', checkInWithQR);
+router.post('/check-in/qr', publicCheckInLimiter, checkInWithQR);
 router.post('/check-in/manual', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), requireFeature('attendance_tracking'), manualCheckIn);
 
 // CRUD routes

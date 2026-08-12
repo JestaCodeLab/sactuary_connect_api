@@ -42,13 +42,16 @@ export const register = async (req, res) => {
     });
 
     // Send verification email
-    await sendVerificationEmail(email, firstName, verificationCode);
+    const emailSent = await sendVerificationEmail(email, firstName, verificationCode);
 
     res.status(201).json({
-      message: 'User registered successfully. Verification code sent to email.',
+      message: emailSent
+        ? 'User registered successfully. Verification code sent to email.'
+        : 'User registered successfully, but the verification email could not be sent. Please use resend.',
       email: user.email,
       requiresVerification: true,
       verificationExpires: '10 minutes',
+      emailSent,
     });
   } catch (error) {
     console.error('Registration error:', error);
@@ -123,6 +126,10 @@ export const resendVerificationCode = async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
+    if (user.verified) {
+      return res.status(400).json({ error: 'Email is already verified' });
+    }
+
     // Delete old codes
     await VerificationCode.deleteMany({ userId: user._id });
 
@@ -135,9 +142,12 @@ export const resendVerificationCode = async (req, res) => {
     });
 
     // Send verification email
-    await sendVerificationEmail(email, user.firstName, verificationCode);
+    const emailSent = await sendVerificationEmail(email, user.firstName, verificationCode);
 
-    res.json({ message: 'Verification code sent' });
+    res.json({
+      message: emailSent ? 'Verification code sent' : 'Could not send verification email. Please try again shortly.',
+      emailSent,
+    });
   } catch (error) {
     console.error('Resend error:', error);
     res.status(500).json({ error: 'Failed to resend code' });
@@ -224,8 +234,13 @@ export const forgotPassword = async (req, res) => {
     });
 
     // Send password reset email
-    await sendPasswordResetEmail(email, user.firstName, resetToken);
+    const emailSent = await sendPasswordResetEmail(email, user.firstName, resetToken);
+    if (!emailSent) {
+      console.error(`Password reset email failed to send for ${email} - reset token is still valid, but the user has no way to receive it via email.`);
+    }
 
+    // Message intentionally stays the same regardless of emailSent - do not reveal
+    // delivery outcome, since that alone could be used to enumerate valid accounts.
     res.json({ message: 'If account exists, reset link has been sent' });
   } catch (error) {
     console.error('Forgot password error:', error);

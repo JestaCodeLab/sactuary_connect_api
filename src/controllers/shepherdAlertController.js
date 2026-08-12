@@ -4,6 +4,10 @@ import ShepherdAlertLog from '../models/ShepherdAlertLog.js';
 import AttendanceRecord from '../models/AttendanceRecord.js';
 import Member from '../models/Member.js';
 import smsService from '../services/smsService.js';
+import { normalizePhone } from '../utils/phoneUtils.js';
+
+const LOOKBACK_MIN_DAYS = 1;
+const LOOKBACK_MAX_DAYS = 365;
 
 /**
  * Get all shepherd alerts for an organization
@@ -80,6 +84,10 @@ export const createShepherdAlert = async (req, res) => {
       return res.status(400).json({ error: 'Absence threshold must be between 1 and 10' });
     }
 
+    if (lookbackPeriodDays < LOOKBACK_MIN_DAYS || lookbackPeriodDays > LOOKBACK_MAX_DAYS) {
+      return res.status(400).json({ error: `Lookback period must be between ${LOOKBACK_MIN_DAYS} and ${LOOKBACK_MAX_DAYS} days` });
+    }
+
     // Verify shepherd members exist
     const shepherdMembers = await Member.find({
       _id: { $in: shepherds.map(s => s.memberId) },
@@ -90,12 +98,17 @@ export const createShepherdAlert = async (req, res) => {
       return res.status(400).json({ error: 'Some specified shepherds do not exist' });
     }
 
+    const normalizedShepherds = shepherds.map(s => ({
+      ...s,
+      phoneNumber: normalizePhone(s.phoneNumber),
+    }));
+
     // Create alert (monitors all members)
     const alert = new ShepherdAlert({
       organizationId,
       branchId,
       name,
-      shepherds,
+      shepherds: normalizedShepherds,
       absenceThreshold,
       lookbackPeriodDays,
     });
@@ -117,12 +130,28 @@ export const updateShepherdAlert = async (req, res) => {
   try {
     const { id } = req.params;
     const { organizationId } = req.user;
-    const updates = req.body;
+    const updates = { ...req.body };
+
+    // Only these fields are client-settable - strip everything else (in
+    // particular organizationId, totalAlertsTriggered, smsSentCount, lastCheckAt,
+    // which were previously mass-assignable straight from the request body).
+    const ALLOWED_FIELDS = ['name', 'shepherds', 'absenceThreshold', 'lookbackPeriodDays', 'branchId', 'isActive'];
+    Object.keys(updates).forEach((key) => {
+      if (!ALLOWED_FIELDS.includes(key)) {
+        delete updates[key];
+      }
+    });
 
     // Validate absence threshold if provided
     if (updates.absenceThreshold !== undefined) {
       if (updates.absenceThreshold < 1 || updates.absenceThreshold > 10) {
         return res.status(400).json({ error: 'Absence threshold must be between 1 and 10' });
+      }
+    }
+
+    if (updates.lookbackPeriodDays !== undefined) {
+      if (updates.lookbackPeriodDays < LOOKBACK_MIN_DAYS || updates.lookbackPeriodDays > LOOKBACK_MAX_DAYS) {
+        return res.status(400).json({ error: `Lookback period must be between ${LOOKBACK_MIN_DAYS} and ${LOOKBACK_MAX_DAYS} days` });
       }
     }
 
@@ -140,6 +169,11 @@ export const updateShepherdAlert = async (req, res) => {
           return res.status(400).json({ error: 'Some specified shepherds do not exist' });
         }
       }
+
+      updates.shepherds = updates.shepherds.map(s => ({
+        ...s,
+        phoneNumber: normalizePhone(s.phoneNumber),
+      }));
     }
 
     const alert = await ShepherdAlert.findOneAndUpdate(
@@ -232,12 +266,14 @@ export const runShepherdAlertCheck = async (req, res) => {
 
     const logs = await executeShepherdAlertCheck(alert, organizationId);
 
-    res.json({ 
+    res.json({
       logs,
       summary: {
         totalChecked: logs.length,
         triggered: logs.filter(l => l.triggerred).length,
         smsSent: logs.filter(l => l.smsSent).length,
+        smsFailed: logs.filter(l => l.smsAttempted && !l.smsSent).length,
+        suppressed: logs.filter(l => l.triggerred && !l.smsAttempted).length,
       }
     });
   } catch (error) {
@@ -331,8 +367,19 @@ async function executeShepherdAlertCheck(alert, organizationId) {
     const members = await Member.find(memberFilter).lean();
 
     const logsToInsert = [];
+    // Members newly-triggered (and not cooldown-suppressed) this run, collected
+    // so shepherds get ONE digest SMS listing everyone instead of one SMS per member.
+    const membersToNotify = [];
 
     for (const member of members) {
+      // A member who joined after this lookback window started hasn't had a full
+      // window's worth of opportunity to attend - counting every occurrence before
+      // they existed as an "absence" would falsely flag brand-new members.
+      const joinDate = member.membershipDate || member.createdAt;
+      if (joinDate && new Date(joinDate) > lookbackStart) {
+        continue;
+      }
+
       const attendedCount = attendanceByMember.get(String(member._id)) || 0;
       const absenceCount = Math.max(0, totalOccurrences - attendedCount);
       const memberName = `${member.firstName} ${member.lastName}`;
@@ -359,47 +406,71 @@ async function executeShepherdAlertCheck(alert, organizationId) {
         logData.triggerred = true;
         logData.smsMessage = `Attendance Alert: ${memberName} has been absent ${absenceCount} times in the last ${alert.lookbackPeriodDays} days.`;
 
-        // Send SMS to each shepherd
-        const smsResults = [];
-        for (const shepherd of alert.shepherds) {
-          logData.smsAttempted = true;
-          try {
-            const smsResult = await smsService.sendShepherdAlertSms(
-              shepherd.phoneNumber,
-              memberName,
-              absenceCount,
-              alert.lookbackPeriodDays,
-              organizationId
-            );
+        // Cooldown: don't re-alert about the same member on this alert more than
+        // once per lookback period - without this, a persistently-absent member's
+        // shepherd would get a fresh SMS every single day the check runs.
+        // eslint-disable-next-line no-await-in-loop
+        const alreadyAlerted = await ShepherdAlertLog.exists({
+          organizationId,
+          shepherdAlertId: alert._id,
+          memberId: member._id,
+          triggerred: true,
+          createdAt: { $gte: lookbackStart },
+        });
 
-            smsResults.push({
-              memberId: shepherd.memberId,
-              phoneNumber: shepherd.phoneNumber,
-              status: smsResult.success ? 'sent' : 'failed',
-            });
-
-            if (smsResult.success) {
-              logData.smsSent = true;
-              logData.smsReference = smsResult.reference;
-            } else {
-              logData.error = smsResult.error;
-              console.warn(`Failed to send shepherd alert SMS: ${smsResult.error}`);
-            }
-          } catch (shepherdError) {
-            console.error(`Error sending SMS to shepherd ${shepherd.phoneNumber}:`, shepherdError);
-            logData.error = shepherdError.message;
-            smsResults.push({
-              memberId: shepherd.memberId,
-              phoneNumber: shepherd.phoneNumber,
-              status: 'failed',
-            });
-          }
+        if (alreadyAlerted) {
+          logData.error = `Suppressed: already alerted about this member within the last ${alert.lookbackPeriodDays} days`;
+        } else {
+          membersToNotify.push({ logData, memberName, absenceCount });
         }
-
-        logData.recipientsNotified = smsResults;
       }
 
       logsToInsert.push(logData);
+    }
+
+    // Send ONE consolidated digest SMS per shepherd listing every member
+    // newly-triggered this run, instead of one SMS per absent member -
+    // applies the same way whether this run came from the daily cron or a
+    // manual "Run Check" trigger, since both share this function.
+    if (membersToNotify.length > 0) {
+      const digestPayload = membersToNotify.map(({ memberName, absenceCount }) => ({ memberName, absenceCount }));
+
+      for (const shepherd of alert.shepherds) {
+        let smsResult;
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          smsResult = await smsService.sendShepherdAlertDigestSms(
+            shepherd.phoneNumber,
+            digestPayload,
+            alert.lookbackPeriodDays,
+            organizationId
+          );
+        } catch (shepherdError) {
+          console.error(`Error sending digest SMS to shepherd ${shepherd.phoneNumber}:`, shepherdError);
+          smsResult = { success: false, error: shepherdError.message };
+        }
+
+        if (!smsResult.success) {
+          console.warn(`Failed to send shepherd alert digest SMS: ${smsResult.error}`);
+        }
+
+        const recipientEntry = {
+          memberId: shepherd.memberId,
+          phoneNumber: shepherd.phoneNumber,
+          status: smsResult.success ? 'sent' : 'failed',
+        };
+
+        for (const { logData } of membersToNotify) {
+          logData.smsAttempted = true;
+          logData.recipientsNotified.push(recipientEntry);
+          if (smsResult.success) {
+            logData.smsSent = true;
+            logData.smsReference = smsResult.reference;
+          } else {
+            logData.error = smsResult.error;
+          }
+        }
+      }
     }
 
     const savedLogs = logsToInsert.length > 0 ? await ShepherdAlertLog.insertMany(logsToInsert) : [];

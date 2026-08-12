@@ -6,7 +6,7 @@ import PDFDocument from 'pdfkit';
 import Member from '../models/Member.js';
 import Department from '../models/Department.js';
 import { branchFilter, resolveCreateBranch } from '../utils/branchQuery.js';
-import { normalizePhone } from '../utils/phoneUtils.js';
+import { normalizePhone, findMemberByPhone } from '../utils/phoneUtils.js';
 import { checkMemberLimit } from '../utils/usageLimits.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -135,6 +135,18 @@ export const createMember = async (req, res) => {
       }
     }
 
+    // Check for an existing member with the same (or equivalent) phone number
+    if (phone) {
+      const duplicate = await findMemberByPhone(Member, phone, req.organizationId);
+      if (duplicate) {
+        return res.status(409).json({
+          error: `A member with this phone number already exists: ${duplicate.firstName} ${duplicate.lastName}`,
+          code: 'DUPLICATE_PHONE',
+          existingMemberId: duplicate._id,
+        });
+      }
+    }
+
     // Check member limit
     const limitCheck = await checkMemberLimit(req.organizationId);
     if (!limitCheck.allowed) {
@@ -222,6 +234,19 @@ export const updateMember = async (req, res) => {
     delete updates.userId;
     delete updates.organizationId;
     delete updates.branchId;
+
+    // Check for an existing (different) member with the same phone number
+    if (updates.phone) {
+      updates.phone = normalizePhone(updates.phone);
+      const duplicate = await findMemberByPhone(Member, updates.phone, currentMember.organizationId);
+      if (duplicate && duplicate._id.toString() !== id) {
+        return res.status(409).json({
+          error: `A member with this phone number already exists: ${duplicate.firstName} ${duplicate.lastName}`,
+          code: 'DUPLICATE_PHONE',
+          existingMemberId: duplicate._id,
+        });
+      }
+    }
 
     // Validate family members if being updated
     if (updates.familyMembers) {

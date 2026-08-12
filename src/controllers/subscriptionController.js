@@ -102,8 +102,15 @@ export const createSubscription = async (req, res) => {
         console.log('🔵 [SUBSCRIPTION] Upgrading from seed to:', planId);
         // Continue to upgrade logic below
       } else if (existingSubscription.planId === planId) {
-        // Same plan - no need to update
-        return res.status(400).json({ error: 'Organization already has this plan' });
+        // Same plan already active - idempotent no-op success, not an error.
+        // createOrganization auto-provisions a seed subscription, so onboarding's
+        // subscription step calling create() again for 'seed' must not fail here.
+        const currentPlan = getPlanById(existingSubscription.planId);
+        return res.status(200).json({
+          message: 'Organization already has this plan',
+          subscription: existingSubscription,
+          plan: currentPlan,
+        });
       } else {
         // Downgrade or switching between paid plans - not allowed in this endpoint
         return res.status(400).json({ error: 'Use update endpoint to change plans' });

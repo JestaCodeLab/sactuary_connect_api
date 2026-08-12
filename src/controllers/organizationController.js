@@ -228,10 +228,13 @@ export const updateOrganization = async (req, res) => {
 
 export const createBranch = async (req, res) => {
   try {
-    const { organizationId, name, address, city, suburb, region, zipCode, latitude, longitude, radius, isHeadOffice } = req.body;
+    const { name, address, city, suburb, region, zipCode, latitude, longitude, radius, isHeadOffice } = req.body;
+    // verifyOrgOwnership has already confirmed the caller owns this org - use it,
+    // not whatever organizationId the client sent in the body.
+    const organizationId = req.organization._id;
 
-    if (!organizationId || !name) {
-      return res.status(400).json({ error: 'Organization ID and branch name are required' });
+    if (!name) {
+      return res.status(400).json({ error: 'Branch name is required' });
     }
 
     console.log('🔵 [BRANCH CREATE] Creating branch with data:', {
@@ -289,8 +292,8 @@ export const createBranch = async (req, res) => {
 
 export const getBranches = async (req, res) => {
   try {
-    const { organizationId } = req.params;
-    const branches = await Branch.find({ organizationId });
+    // verifyOrgOwnership has already confirmed the caller owns this org.
+    const branches = await Branch.find({ organizationId: req.organization._id });
     res.json(branches);
   } catch (error) {
     console.error('Error fetching branches:', error);
@@ -306,6 +309,12 @@ export const updateBranch = async (req, res) => {
     const branch = await Branch.findById(branchId);
     if (!branch) {
       return res.status(404).json({ error: 'Branch not found' });
+    }
+
+    // verifyOrgOwnership only confirmed the :organizationId in the URL belongs to the
+    // caller - it says nothing about whether this specific branch does. Check that too.
+    if (branch.organizationId.toString() !== req.organization._id.toString()) {
+      return res.status(403).json({ error: 'Forbidden - This branch does not belong to your organization' });
     }
 
     if (name !== undefined) branch.name = name;

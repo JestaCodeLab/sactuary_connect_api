@@ -76,8 +76,8 @@ export const getEventById = async (req, res) => {
   try {
     const { id } = req.params;
     const now = new Date();
-    
-    const event = await Event.findById(id)
+
+    const event = await Event.findOne({ _id: id, organizationId: req.organizationId })
       .populate('organizerId', 'firstName lastName email');
 
     if (!event) {
@@ -129,6 +129,14 @@ export const createEvent = async (req, res) => {
 
     if (!title || !startDate || !endDate) {
       return res.status(400).json({ error: 'Title, start date, and end date are required' });
+    }
+
+    if (new Date(endDate) <= new Date(startDate)) {
+      return res.status(400).json({ error: 'End date must be after start date' });
+    }
+
+    if (isRecurring && !recurrencePattern) {
+      return res.status(400).json({ error: 'A recurrence pattern is required for recurring events' });
     }
 
     let cleanReminders;
@@ -201,11 +209,30 @@ export const updateEvent = async (req, res) => {
     delete updates.organizationId;
     delete updates.branchId;
 
-    const event = await Event.findByIdAndUpdate(id, updates, { new: true });
-
-    if (!event) {
+    const existing = await Event.findOne({ _id: id, organizationId: req.organizationId });
+    if (!existing) {
       return res.status(404).json({ error: 'Event not found' });
     }
+
+    // Validate the merged result (existing values + this partial update), not just
+    // whatever subset of fields happens to be in this particular request body.
+    const mergedStartDate = updates.startDate !== undefined ? updates.startDate : existing.startDate;
+    const mergedEndDate = updates.endDate !== undefined ? updates.endDate : existing.endDate;
+    if (new Date(mergedEndDate) <= new Date(mergedStartDate)) {
+      return res.status(400).json({ error: 'End date must be after start date' });
+    }
+
+    const mergedIsRecurring = updates.isRecurring !== undefined ? updates.isRecurring : existing.isRecurring;
+    const mergedRecurrencePattern = updates.recurrencePattern !== undefined ? updates.recurrencePattern : existing.recurrencePattern;
+    if (mergedIsRecurring && !mergedRecurrencePattern) {
+      return res.status(400).json({ error: 'A recurrence pattern is required for recurring events' });
+    }
+
+    const event = await Event.findOneAndUpdate(
+      { _id: id, organizationId: req.organizationId },
+      updates,
+      { new: true }
+    );
 
     res.json(event);
   } catch (error) {
@@ -217,7 +244,7 @@ export const updateEvent = async (req, res) => {
 export const deleteEvent = async (req, res) => {
   try {
     const { id } = req.params;
-    const event = await Event.findByIdAndDelete(id);
+    const event = await Event.findOneAndDelete({ _id: id, organizationId: req.organizationId });
 
     if (!event) {
       return res.status(404).json({ error: 'Event not found' });
@@ -233,7 +260,7 @@ export const deleteEvent = async (req, res) => {
 export const registerForEvent = async (req, res) => {
   try {
     const { eventId } = req.params;
-    const event = await Event.findById(eventId);
+    const event = await Event.findOne({ _id: eventId, organizationId: req.organizationId });
 
     if (!event) {
       return res.status(404).json({ error: 'Event not found' });
@@ -249,7 +276,7 @@ export const registerForEvent = async (req, res) => {
 export const generateShareLink = async (req, res) => {
   try {
     const { id } = req.params;
-    const event = await Event.findById(id);
+    const event = await Event.findOne({ _id: id, organizationId: req.organizationId });
 
     if (!event) {
       return res.status(404).json({ error: 'Event not found' });
@@ -277,7 +304,13 @@ export const getPublicEvent = async (req, res) => {
   try {
     const { shareToken } = req.params;
     const event = await Event.findOne({ shareToken, isPublic: true })
-      .populate('organizerId', 'firstName lastName');
+      .populate('organizerId', 'firstName lastName')
+      // Explicitly select only what a public visitor should see. The QR check-in
+      // token/image (event.qrCode) is a bearer credential for the public check-in
+      // flow - for recurring events it never expires, so leaking it here would let
+      // anyone with a share link check people in indefinitely without ever scanning
+      // the real QR code.
+      .select('title description eventType startDate endDate location maxCapacity organizerId organizationId isPublic shareToken status');
 
     if (!event) {
       return res.status(404).json({ error: 'Event not found' });
@@ -295,7 +328,7 @@ export const shareEventByEmail = async (req, res) => {
     const { id } = req.params;
     const { memberIds, message: customMessage } = req.body;
 
-    const event = await Event.findById(id);
+    const event = await Event.findOne({ _id: id, organizationId: req.organizationId });
     if (!event) {
       return res.status(404).json({ error: 'Event not found' });
     }
@@ -349,7 +382,7 @@ export const getUpcomingOccurrences = async (req, res) => {
     const { id } = req.params;
     const rangeDays = parseInt(req.query.range) || 30;
 
-    const event = await Event.findById(id);
+    const event = await Event.findOne({ _id: id, organizationId: req.organizationId });
     if (!event) {
       return res.status(404).json({ error: 'Event not found' });
     }
@@ -385,7 +418,7 @@ export const getUpcomingOccurrences = async (req, res) => {
 export const generateQRCode = async (req, res) => {
   try {
     const { id } = req.params;
-    const event = await Event.findById(id);
+    const event = await Event.findOne({ _id: id, organizationId: req.organizationId });
 
     if (!event) {
       return res.status(404).json({ error: 'Event not found' });
@@ -445,7 +478,7 @@ export const generateQRCode = async (req, res) => {
 export const getQRCode = async (req, res) => {
   try {
     const { id } = req.params;
-    const event = await Event.findById(id);
+    const event = await Event.findOne({ _id: id, organizationId: req.organizationId });
 
     if (!event) {
       return res.status(404).json({ error: 'Event not found' });
@@ -582,7 +615,7 @@ export const getServiceCode = async (req, res) => {
     const { id } = req.params;
     const { occurrenceDate } = req.query;
 
-    const event = await Event.findById(id);
+    const event = await Event.findOne({ _id: id, organizationId: req.organizationId });
     if (!event) {
       return res.status(404).json({ error: 'Event not found' });
     }
@@ -646,7 +679,7 @@ export const regenerateServiceCode = async (req, res) => {
     const { id } = req.params;
     const { occurrenceDate } = req.body;
 
-    const event = await Event.findById(id);
+    const event = await Event.findOne({ _id: id, organizationId: req.organizationId });
     if (!event) {
       return res.status(404).json({ error: 'Event not found' });
     }
@@ -683,13 +716,16 @@ export const regenerateServiceCode = async (req, res) => {
       }
     }
 
-    // Generate new service code with proper occurrence end time
+    // Generate new service code with proper occurrence end time - forceNew:true
+    // because this endpoint is specifically the "Regenerate" action, not a plain
+    // get-or-create (that's what GET /:id/service-code is for).
     const serviceCode = await serviceCodeService.generateCodeForOccurrence(
       event._id,
       targetOccurrence.startDate,
       event.organizationId,
       event.branchId,
-      { startDate: targetOccurrence.startDate, endDate: targetOccurrence.endDate }
+      { startDate: targetOccurrence.startDate, endDate: targetOccurrence.endDate },
+      true
     );
 
     res.json({

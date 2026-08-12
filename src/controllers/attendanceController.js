@@ -7,6 +7,7 @@ import Attendance from '../models/Attendance.js';
 import AttendanceRecord from '../models/AttendanceRecord.js';
 import Event from '../models/Event.js';
 import Member from '../models/Member.js';
+import User from '../models/User.js';
 import ServiceCode from '../models/ServiceCode.js';
 import { branchFilter, resolveCreateBranch } from '../utils/branchQuery.js';
 import { getNextOccurrence, getCurrentOccurrence } from '../utils/occurrenceHelper.js';
@@ -17,51 +18,69 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const EXPORTS_DIR = path.join(__dirname, '../../exports');
 
+// List events (org/branch-scoped) with their attendance counts, filterable by
+// date range / status / title search - the events themselves are the source of
+// truth (so an event with zero check-ins still shows up as 0, not omitted), with
+// AttendanceRecord counts merged in per event.
 export const getAllAttendance = async (req, res) => {
   try {
-    // Get recent individual check-ins (last 50) grouped by event
-    const recentCheckIns = await AttendanceRecord.find(branchFilter(req))
-      .populate('eventId', 'title startDate eventType')
-      .populate('memberId', 'firstName lastName')
-      .populate('userId', 'firstName lastName')
-      .sort({ checkInTime: -1 })
-      .limit(50);
+    const { startDate, endDate, status, search } = req.query;
+    const filter = branchFilter(req);
 
-    // Group by event and count
-    const eventMap = new Map();
-    
-    recentCheckIns.forEach(record => {
-      const eventId = record.eventId?._id?.toString();
-      if (!eventId) return;
-      
-      if (!eventMap.has(eventId)) {
-        eventMap.set(eventId, {
-          eventId: record.eventId._id,
-          eventTitle: record.eventId.title,
-          eventDate: record.eventId.startDate,
-          eventType: record.eventId.eventType,
-          checkIns: [],
-          totalCheckIns: 0,
-          members: 0,
-          guests: 0,
-          qrCheckIns: 0,
-        });
-      }
-      
-      const event = eventMap.get(eventId);
-      event.totalCheckIns++;
-      event.checkIns.push(record);
-      
-      if (record.memberId) event.members++;
-      if (record.checkInMethod === 'guest') event.guests++;
-      if (record.checkInMethod === 'qr') event.qrCheckIns++;
+    if (startDate) {
+      filter.startDate = { ...filter.startDate, $gte: new Date(startDate) };
+    }
+    if (endDate) {
+      const endDateTime = new Date(endDate);
+      endDateTime.setHours(23, 59, 59, 999);
+      filter.startDate = { ...filter.startDate, $lte: endDateTime };
+    }
+    if (status && ['scheduled', 'ongoing', 'completed', 'cancelled'].includes(status)) {
+      filter.status = status;
+    }
+    if (search && search.trim()) {
+      filter.title = { $regex: search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
+    }
+
+    const events = await Event.find(filter)
+      .select('title startDate endDate eventType status isRecurring')
+      .sort({ startDate: -1 })
+      .limit(100);
+
+    const eventIds = events.map((e) => e._id);
+
+    const attendanceCounts = await AttendanceRecord.aggregate([
+      { $match: { eventId: { $in: eventIds } } },
+      {
+        $group: {
+          _id: '$eventId',
+          totalCheckIns: { $sum: 1 },
+          members: { $sum: { $cond: [{ $ne: ['$memberId', null] }, 1, 0] } },
+          guests: { $sum: { $cond: [{ $eq: ['$checkInMethod', 'guest'] }, 1, 0] } },
+          qrCheckIns: { $sum: { $cond: [{ $eq: ['$checkInMethod', 'qr'] }, 1, 0] } },
+        },
+      },
+    ]);
+    const countsByEvent = new Map(attendanceCounts.map((c) => [String(c._id), c]));
+
+    const results = events.map((event) => {
+      const counts = countsByEvent.get(String(event._id));
+      return {
+        eventId: event._id,
+        eventTitle: event.title,
+        eventDate: event.startDate,
+        eventEndDate: event.endDate,
+        eventType: event.eventType,
+        eventStatus: event.status,
+        isRecurring: event.isRecurring,
+        totalCheckIns: counts?.totalCheckIns || 0,
+        members: counts?.members || 0,
+        guests: counts?.guests || 0,
+        qrCheckIns: counts?.qrCheckIns || 0,
+      };
     });
 
-    const groupedRecords = Array.from(eventMap.values())
-      .sort((a, b) => new Date(b.eventDate).getTime() - new Date(a.eventDate).getTime())
-      .slice(0, 20); // Return top 20 events
-
-    res.json(groupedRecords);
+    res.json(results);
   } catch (error) {
     console.error('Error fetching attendance:', error);
     res.status(500).json({ error: 'Failed to fetch attendance records' });
@@ -71,7 +90,7 @@ export const getAllAttendance = async (req, res) => {
 export const getAttendanceById = async (req, res) => {
   try {
     const { id } = req.params;
-    const record = await Attendance.findById(id)
+    const record = await Attendance.findOne({ _id: id, organizationId: req.organizationId })
       .populate('eventId', 'title eventType');
 
     if (!record) {
@@ -121,9 +140,15 @@ export const updateAttendance = async (req, res) => {
     const { id } = req.params;
     const updates = { ...req.body };
     delete updates._id;
+    delete updates.organizationId;
+    delete updates.branchId;
     updates.updatedAt = Date.now();
 
-    const record = await Attendance.findByIdAndUpdate(id, updates, { new: true })
+    const record = await Attendance.findOneAndUpdate(
+      { _id: id, organizationId: req.organizationId },
+      updates,
+      { new: true }
+    )
       .populate('eventId', 'title eventType');
 
     if (!record) {
@@ -140,7 +165,7 @@ export const updateAttendance = async (req, res) => {
 export const deleteAttendance = async (req, res) => {
   try {
     const { id } = req.params;
-    const record = await Attendance.findByIdAndDelete(id);
+    const record = await Attendance.findOneAndDelete({ _id: id, organizationId: req.organizationId });
 
     if (!record) {
       return res.status(404).json({ error: 'Attendance record not found' });
@@ -271,14 +296,31 @@ export const checkInWithQR = async (req, res) => {
       matchedMember = await findMemberByPhone(Member, phone, event.organizationId);
     }
 
-    const resolvedMemberId = memberId || (matchedMember ? matchedMember._id : null);
+    // This is a public, unauthenticated endpoint - memberId/userId arrive directly
+    // from the client and must be verified as actually belonging to this event's
+    // organization before being trusted, otherwise anyone could tie an arbitrary
+    // member/user from any org to this attendance record. An invalid id is treated
+    // as if it were never supplied (falls back to phone/name/guest matching below)
+    // rather than erroring, so this doesn't leak whether a given id exists elsewhere.
+    let verifiedMemberId = null;
+    if (memberId) {
+      const memberDoc = await Member.findOne({ _id: memberId, organizationId: event.organizationId }).select('_id');
+      if (memberDoc) verifiedMemberId = memberDoc._id;
+    }
+    let verifiedUserId = null;
+    if (userId) {
+      const userDoc = await User.findOne({ _id: userId, organizationId: event.organizationId }).select('_id');
+      if (userDoc) verifiedUserId = userDoc._id;
+    }
 
-    if (resolvedMemberId || userId) {
+    const resolvedMemberId = verifiedMemberId || (matchedMember ? matchedMember._id : null);
+
+    if (resolvedMemberId || verifiedUserId) {
       existingCheckIn = await AttendanceRecord.findOne({
         ...duplicateFilter,
         $or: [
           resolvedMemberId ? { memberId: resolvedMemberId } : null,
-          userId ? { userId } : null,
+          verifiedUserId ? { userId: verifiedUserId } : null,
         ].filter(Boolean),
       });
     } else if (phone) {
@@ -286,6 +328,15 @@ export const checkInWithQR = async (req, res) => {
         ...duplicateFilter,
         phone: normalizePhone(phone),
         checkInMethod: 'guest',
+      });
+    } else if (name && name.trim()) {
+      // No phone to key off - fall back to a case-insensitive exact name match
+      // within this occurrence so a guest can't rack up unlimited duplicate
+      // check-ins by resubmitting the same name with no phone.
+      existingCheckIn = await AttendanceRecord.findOne({
+        ...duplicateFilter,
+        checkInMethod: 'guest',
+        name: new RegExp(`^${name.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i'),
       });
     }
 
@@ -311,8 +362,8 @@ export const checkInWithQR = async (req, res) => {
 
     if (resolvedMemberId) {
       checkInData.memberId = resolvedMemberId;
-    } else if (userId) {
-      checkInData.userId = userId;
+    } else if (verifiedUserId) {
+      checkInData.userId = verifiedUserId;
     } else {
       checkInData.checkInMethod = 'guest';
       checkInData.name = name;
@@ -341,6 +392,11 @@ export const getEventAttendanceRecords = async (req, res) => {
   try {
     const { eventId } = req.params;
     const { occurrenceDate } = req.query;
+
+    const event = await Event.findOne({ _id: eventId, organizationId: req.organizationId }).select('_id');
+    if (!event) {
+      return res.status(404).json({ error: 'Event not found' });
+    }
 
     const filter = { eventId };
     if (occurrenceDate) {
@@ -376,7 +432,7 @@ export const manualCheckIn = async (req, res) => {
       return res.status(400).json({ error: 'Event ID is required' });
     }
 
-    const event = await Event.findById(eventId);
+    const event = await Event.findOne({ _id: eventId, organizationId: req.organizationId });
     if (!event) {
       return res.status(404).json({ error: 'Event not found' });
     }
@@ -404,17 +460,60 @@ export const manualCheckIn = async (req, res) => {
       matchedMember = await findMemberByPhone(Member, phone, event.organizationId);
     }
 
-    const resolvedMemberId = memberId || (matchedMember ? matchedMember._id : null);
+    // Verify memberId/userId actually belong to this org before trusting them -
+    // same reasoning as checkInWithQR: even though this route is admin/pastor-only,
+    // trusting an unverified cross-org id would let an admin tie a foreign org's
+    // member to this attendance record, and later leak that member's name/phone/
+    // email to this org via the populated attendance list/export.
+    let verifiedMemberId = null;
+    if (memberId) {
+      const memberDoc = await Member.findOne({ _id: memberId, organizationId: event.organizationId }).select('_id');
+      if (memberDoc) verifiedMemberId = memberDoc._id;
+    }
+    let verifiedUserId = null;
+    if (userId) {
+      const userDoc = await User.findOne({ _id: userId, organizationId: event.organizationId }).select('_id');
+      if (userDoc) verifiedUserId = userDoc._id;
+    }
 
-    if (resolvedMemberId || userId) {
+    const resolvedMemberId = verifiedMemberId || (matchedMember ? matchedMember._id : null);
+
+    if (resolvedMemberId || verifiedUserId) {
       const existingCheckIn = await AttendanceRecord.findOne({
         ...duplicateFilter,
         $or: [
           resolvedMemberId ? { memberId: resolvedMemberId } : null,
-          userId ? { userId } : null,
+          verifiedUserId ? { userId: verifiedUserId } : null,
         ].filter(Boolean),
       });
 
+      if (existingCheckIn) {
+        return res.status(400).json({
+          error: 'Already checked in',
+          checkInTime: existingCheckIn.checkInTime,
+        });
+      }
+    } else if (phone) {
+      const existingCheckIn = await AttendanceRecord.findOne({
+        ...duplicateFilter,
+        phone: normalizePhone(phone),
+        checkInMethod: 'guest',
+      });
+      if (existingCheckIn) {
+        return res.status(400).json({
+          error: 'Already checked in',
+          checkInTime: existingCheckIn.checkInTime,
+        });
+      }
+    } else if (name && name.trim()) {
+      // No phone to key off - same case-insensitive exact name match fallback
+      // used in checkInWithQR, so repeated guest submissions can't rack up
+      // unlimited duplicate records.
+      const existingCheckIn = await AttendanceRecord.findOne({
+        ...duplicateFilter,
+        checkInMethod: 'guest',
+        name: new RegExp(`^${name.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i'),
+      });
       if (existingCheckIn) {
         return res.status(400).json({
           error: 'Already checked in',
@@ -438,8 +537,8 @@ export const manualCheckIn = async (req, res) => {
 
     if (resolvedMemberId) {
       checkInData.memberId = resolvedMemberId;
-    } else if (userId) {
-      checkInData.userId = userId;
+    } else if (verifiedUserId) {
+      checkInData.userId = verifiedUserId;
     } else {
       checkInData.checkInMethod = 'guest';
       checkInData.name = name;
@@ -472,7 +571,7 @@ export const exportEventAttendance = async (req, res) => {
 
     console.log('Export attendance request:', { eventId, format, occurrenceDate });
 
-    const event = await Event.findById(eventId);
+    const event = await Event.findOne({ _id: eventId, organizationId: req.organizationId });
     if (!event) {
       return res.status(404).json({ error: 'Event not found' });
     }
@@ -627,7 +726,7 @@ export const exportEventAttendance = async (req, res) => {
 export const deleteAttendanceRecord = async (req, res) => {
   try {
     const { id } = req.params;
-    const record = await AttendanceRecord.findByIdAndDelete(id);
+    const record = await AttendanceRecord.findOneAndDelete({ _id: id, organizationId: req.organizationId });
 
     if (!record) {
       return res.status(404).json({ error: 'Attendance record not found' });

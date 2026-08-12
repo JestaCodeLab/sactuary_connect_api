@@ -26,12 +26,15 @@ export const checkMemberLimit = async (organizationId) => {
 
     const memberCount = await Member.countDocuments({ organizationId });
     const limit = plan.limits.maxMembers;
+    // -1 means unlimited
+    const isUnlimited = limit === -1;
+    const allowed = isUnlimited || memberCount < limit;
 
     return {
-      allowed: memberCount < limit,
+      allowed,
       current: memberCount,
-      limit,
-      remaining: Math.max(0, limit - memberCount),
+      limit: isUnlimited ? 'Unlimited' : limit,
+      remaining: isUnlimited ? 'Unlimited' : Math.max(0, limit - memberCount),
     };
   } catch (error) {
     console.error('Error checking member limit:', error);
@@ -61,14 +64,17 @@ export const checkBranchLimit = async (organizationId) => {
 
     const branchCount = await Branch.countDocuments({ organizationId });
     const limit = plan.limits.maxBranches;
+    // -1 means unlimited
+    const isUnlimited = limit === -1;
+    const allowed = isUnlimited || branchCount < limit;
 
-    console.log('📊 [BRANCH LIMIT] Check result:', { branchCount, limit, allowed: branchCount < limit });
+    console.log('📊 [BRANCH LIMIT] Check result:', { branchCount, limit, allowed });
 
     return {
-      allowed: branchCount < limit,
+      allowed,
       current: branchCount,
-      limit,
-      remaining: Math.max(0, limit - branchCount),
+      limit: isUnlimited ? 'Unlimited' : limit,
+      remaining: isUnlimited ? 'Unlimited' : Math.max(0, limit - branchCount),
     };
   } catch (error) {
     console.error('❌ [BRANCH LIMIT] Error checking branch limit:', error);

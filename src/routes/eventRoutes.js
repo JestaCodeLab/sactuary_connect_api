@@ -20,13 +20,14 @@ import {
 import { authenticateToken, authorizeRole } from '../middleware/auth.js';
 import { resolveBranchContext } from '../middleware/branchContext.js';
 import { requireFeature } from '../middleware/featureGate.js';
+import { publicCheckInLimiter } from '../middleware/rateLimiter.js';
 
 const router = express.Router();
 
 // Public routes (no auth required)
-router.get('/public/:shareToken', getPublicEvent);
-router.get('/check-in/:token', getEventByToken);
-router.get('/check-in/:token/members', searchMembersForCheckIn);
+router.get('/public/:shareToken', publicCheckInLimiter, getPublicEvent);
+router.get('/check-in/:token', publicCheckInLimiter, getEventByToken);
+router.get('/check-in/:token/members', publicCheckInLimiter, searchMembersForCheckIn);
 
 // Authenticated routes
 router.get('/', authenticateToken, resolveBranchContext, requireFeature('event_management'), getAllEvents);

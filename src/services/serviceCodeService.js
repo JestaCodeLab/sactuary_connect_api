@@ -10,7 +10,7 @@ export const serviceCodeService = {
    * @param branchId - Branch ID
    * @param eventData - Object with startDate and endDate (occurrence times, not template)
    */
-  generateCodeForOccurrence: async (eventId, occurrenceDate, organizationId, branchId, eventData = null) => {
+  generateCodeForOccurrence: async (eventId, occurrenceDate, organizationId, branchId, eventData = null, forceNew = false) => {
     try {
       // Check if code already exists for this occurrence
       const existing = await ServiceCode.findOne({
@@ -19,7 +19,12 @@ export const serviceCodeService = {
       });
 
       if (existing) {
-        return existing;
+        if (!forceNew) {
+          return existing;
+        }
+        // Explicit regenerate request - invalidate the old code rather than handing
+        // it back unchanged (a leaked/overheard code must actually stop working).
+        await ServiceCode.deleteOne({ _id: existing._id });
       }
 
       // Generate new code
