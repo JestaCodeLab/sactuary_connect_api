@@ -33,6 +33,10 @@ const notificationSchema = new mongoose.Schema({
       'large_donation_received',
       // Shepherd Alerts
       'shepherd_alert_triggered',
+      // Finance KYC
+      'finance_account_approved',
+      'finance_account_rejected',
+      'finance_account_revoked',
       // Events
       'event_cancelled',
       'event_reminder',

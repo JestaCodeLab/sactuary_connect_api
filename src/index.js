@@ -1,8 +1,8 @@
+import 'dotenv/config';
 import 'express-async-errors';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
-import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import path from 'path';
 import connectDB from './config/database.js';
@@ -37,8 +37,6 @@ import shepherdAlertRoutes from './routes/shepherdAlertRoutes.js';
 import notificationRoutes from './routes/notificationRoutes.js';
 import superadminRoutes from './routes/superadminRoutes.js';
 import invitationRoutes from './routes/invitationRoutes.js';
-
-dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;

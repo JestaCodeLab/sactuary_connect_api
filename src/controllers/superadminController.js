@@ -13,6 +13,7 @@ import Department from '../models/Department.js';
 import Event from '../models/Event.js';
 import AuditLog from '../models/AuditLog.js';
 import FinanceAccount from '../models/FinanceAccount.js';
+import notificationService from '../services/notificationService.js';
 import { verifyPaystackKey } from '../services/paystackService.js';
 import { encrypt } from '../utils/encryption.js';
 import { PLANS } from '../config/plans.js';
@@ -1122,6 +1123,27 @@ export const approveFinanceAccount = async (req, res) => {
       },
     });
 
+    if (account.submittedBy) {
+      try {
+        await notificationService.createNotification(
+          account.submittedBy,
+          account.organizationId,
+          'finance_account_approved',
+          '✓ Finance account approved',
+          `Your finance account for "${account.businessName}" has been approved. You can now accept donations and payments.`,
+          {
+            priority: 'high',
+            channels: { inApp: true, email: false },
+            relatedModel: 'FinanceAccount',
+            relatedModelId: account._id,
+            actionUrl: '/dashboard/finance',
+          }
+        );
+      } catch (notificationError) {
+        console.error('Error sending finance approval notification:', notificationError);
+      }
+    }
+
     res.json({
       message: 'Finance account approved successfully',
       account: {
@@ -1187,7 +1209,26 @@ export const rejectFinanceAccount = async (req, res) => {
       },
     });
 
-    // TODO: Send email notification to organization admin with rejection reason
+    if (account.submittedBy) {
+      try {
+        await notificationService.createNotification(
+          account.submittedBy,
+          account.organizationId,
+          'finance_account_rejected',
+          'Finance account rejected',
+          `Your finance account submission for "${account.businessName}" was rejected: ${rejectionReason}. You can update your details and resubmit.`,
+          {
+            priority: 'high',
+            channels: { inApp: true, email: false },
+            relatedModel: 'FinanceAccount',
+            relatedModelId: account._id,
+            actionUrl: '/finance/setup',
+          }
+        );
+      } catch (notificationError) {
+        console.error('Error sending finance rejection notification:', notificationError);
+      }
+    }
 
     res.json({
       message: 'Finance account rejected. Organization can resubmit.',
@@ -1259,7 +1300,26 @@ export const revokeFinanceAccount = async (req, res) => {
       },
     });
 
-    // TODO: Send email notification to organization admin about revocation
+    if (account.submittedBy) {
+      try {
+        await notificationService.createNotification(
+          account.submittedBy,
+          account.organizationId,
+          'finance_account_revoked',
+          'Finance account revoked',
+          `Your finance account for "${account.businessName}" has been revoked: ${revokedReason}. Payments and donations are disabled until it is re-approved.`,
+          {
+            priority: 'high',
+            channels: { inApp: true, email: false },
+            relatedModel: 'FinanceAccount',
+            relatedModelId: account._id,
+            actionUrl: '/dashboard/finance',
+          }
+        );
+      } catch (notificationError) {
+        console.error('Error sending finance revocation notification:', notificationError);
+      }
+    }
 
     res.json({
       message: 'Finance account revoked',
