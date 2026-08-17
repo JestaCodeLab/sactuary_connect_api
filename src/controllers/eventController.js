@@ -378,8 +378,10 @@ export const shareEventByEmail = async (req, res) => {
     const clientUrl = process.env.CLIENT_URL || 'https://app.sanctuaryconnect.org';
     const shareUrl = `${clientUrl}/events/${event.shareToken}`;
 
+    // Pinned to UTC (the fixed event timezone) rather than left to the
+    // server process's ambient timezone, which isn't guaranteed to be UTC.
     const startDate = new Date(event.startDate).toLocaleDateString('en-US', {
-      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+      timeZone: 'UTC', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
     });
 
     const body = customMessage

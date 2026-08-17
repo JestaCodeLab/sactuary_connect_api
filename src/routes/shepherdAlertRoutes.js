@@ -1,5 +1,6 @@
 import express from 'express';
 import { authenticateToken } from '../middleware/auth.js';
+import { resolveBranchContext } from '../middleware/branchContext.js';
 import { requireFeature } from '../middleware/featureGate.js';
 import {
   getShepherdAlerts,
@@ -14,8 +15,9 @@ import {
 
 const router = express.Router();
 
-// All routes require authentication and shepherd_alerts feature
+// All routes require authentication, branch context, and the shepherd_alerts feature
 router.use(authenticateToken);
+router.use(resolveBranchContext);
 router.use(requireFeature('ai_shepherd_alerts'));
 
 // Special routes first (before :id route)

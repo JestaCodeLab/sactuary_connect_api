@@ -23,12 +23,17 @@ function getNextOccurrenceStart(event, now) {
   const anchorStart = new Date(event.startDate);
   const seriesEnd = event.recurrenceEndDate ? new Date(event.recurrenceEndDate) : null;
 
+  // UTC-based Date methods throughout: event.startDate is a UTC instant
+  // representing the fixed event timezone's wall-clock time, and getDay()/
+  // setDate()/etc operate in the server process's ambient timezone — which
+  // isn't guaranteed to be UTC and would shift which weekday/occurrence is
+  // computed depending on where this job happens to run.
   const current = new Date(anchorStart);
   if (event.recurrenceDay !== undefined && event.recurrenceDay !== null) {
-    while (current.getDay() !== event.recurrenceDay) {
-      current.setDate(current.getDate() + 1);
+    while (current.getUTCDay() !== event.recurrenceDay) {
+      current.setUTCDate(current.getUTCDate() + 1);
     }
-    current.setHours(anchorStart.getHours(), anchorStart.getMinutes(), anchorStart.getSeconds(), anchorStart.getMilliseconds());
+    current.setUTCHours(anchorStart.getUTCHours(), anchorStart.getUTCMinutes(), anchorStart.getUTCSeconds(), anchorStart.getUTCMilliseconds());
   }
 
   const increment = event.recurrencePattern === 'weekly' ? 7 : event.recurrencePattern === 'biweekly' ? 14 : 30;
@@ -36,9 +41,9 @@ function getNextOccurrenceStart(event, now) {
   // Advance to the next occurrence that hasn't started yet
   while (current < now) {
     if (event.recurrencePattern === 'monthly') {
-      current.setMonth(current.getMonth() + 1);
+      current.setUTCMonth(current.getUTCMonth() + 1);
     } else {
-      current.setDate(current.getDate() + increment);
+      current.setUTCDate(current.getUTCDate() + increment);
     }
   }
 

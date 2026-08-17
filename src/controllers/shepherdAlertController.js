@@ -5,24 +5,25 @@ import AttendanceRecord from '../models/AttendanceRecord.js';
 import Member from '../models/Member.js';
 import smsService from '../services/smsService.js';
 import { normalizePhone } from '../utils/phoneUtils.js';
+import { branchFilter, resolveCreateBranch } from '../utils/branchQuery.js';
 
 const LOOKBACK_MIN_DAYS = 1;
 const LOOKBACK_MAX_DAYS = 365;
 
 /**
- * Get all shepherd alerts for an organization
+ * Get all shepherd alerts for an organization, scoped to the selected
+ * branch (or the user's assigned branches) the same way events/members are.
  */
 export const getShepherdAlerts = async (req, res) => {
   try {
-    const { organizationId } = req.user;
-    const { branchId, isActive } = req.query;
+    const { isActive } = req.query;
 
-    const filter = { organizationId };
-    if (branchId) filter.branchId = branchId;
+    const filter = branchFilter(req);
     if (isActive !== undefined) filter.isActive = isActive === 'true';
 
     const alerts = await ShepherdAlert.find(filter)
       .populate('shepherds.memberId', 'firstName lastName phone')
+      .populate('branchId', 'name')
       .sort({ createdAt: -1 });
 
     res.json(alerts);
@@ -38,13 +39,14 @@ export const getShepherdAlerts = async (req, res) => {
 export const getShepherdAlert = async (req, res) => {
   try {
     const { id } = req.params;
-    const { organizationId } = req.user;
+    const organizationId = req.organizationId;
 
     const alert = await ShepherdAlert.findOne({
       _id: id,
       organizationId,
     })
-      .populate('shepherds.memberId', 'firstName lastName phone');
+      .populate('shepherds.memberId', 'firstName lastName phone')
+      .populate('branchId', 'name');
 
     if (!alert) {
       return res.status(404).json({ error: 'Shepherd alert not found' });
@@ -62,18 +64,22 @@ export const getShepherdAlert = async (req, res) => {
  */
 export const createShepherdAlert = async (req, res) => {
   try {
-    const { organizationId } = req.user;
+    const organizationId = req.organizationId;
     const {
       name,
       shepherds,
       absenceThreshold = 3,
       lookbackPeriodDays = 30,
-      branchId,
     } = req.body;
 
     // Validate required fields
     if (!name?.trim()) {
       return res.status(400).json({ error: 'Alert name is required' });
+    }
+
+    const branchId = resolveCreateBranch(req);
+    if (!branchId) {
+      return res.status(400).json({ error: 'Branch is required' });
     }
 
     if (!shepherds || shepherds.length === 0) {
@@ -103,7 +109,7 @@ export const createShepherdAlert = async (req, res) => {
       phoneNumber: normalizePhone(s.phoneNumber),
     }));
 
-    // Create alert (monitors all members)
+    // Create alert (monitors all members in this branch)
     const alert = new ShepherdAlert({
       organizationId,
       branchId,
@@ -115,6 +121,7 @@ export const createShepherdAlert = async (req, res) => {
 
     await alert.save();
     await alert.populate('shepherds.memberId', 'firstName lastName phone');
+    await alert.populate('branchId', 'name');
 
     res.status(201).json({ alert });
   } catch (error) {
@@ -129,7 +136,7 @@ export const createShepherdAlert = async (req, res) => {
 export const updateShepherdAlert = async (req, res) => {
   try {
     const { id } = req.params;
-    const { organizationId } = req.user;
+    const organizationId = req.organizationId;
     const updates = { ...req.body };
 
     // Only these fields are client-settable - strip everything else (in
@@ -141,6 +148,12 @@ export const updateShepherdAlert = async (req, res) => {
         delete updates[key];
       }
     });
+
+    // branchId is required on every alert - block clearing it via update
+    // (the field is still editable to reassign the alert to a different branch)
+    if ('branchId' in updates && !updates.branchId) {
+      return res.status(400).json({ error: 'Branch is required' });
+    }
 
     // Validate absence threshold if provided
     if (updates.absenceThreshold !== undefined) {
@@ -181,7 +194,8 @@ export const updateShepherdAlert = async (req, res) => {
       updates,
       { new: true }
     )
-      .populate('shepherds.memberId', 'firstName lastName phone');
+      .populate('shepherds.memberId', 'firstName lastName phone')
+      .populate('branchId', 'name');
 
     if (!alert) {
       return res.status(404).json({ error: 'Shepherd alert not found' });
@@ -200,7 +214,7 @@ export const updateShepherdAlert = async (req, res) => {
 export const deleteShepherdAlert = async (req, res) => {
   try {
     const { id } = req.params;
-    const { organizationId } = req.user;
+    const organizationId = req.organizationId;
 
     const alert = await ShepherdAlert.findOneAndDelete({
       _id: id,
@@ -224,7 +238,7 @@ export const deleteShepherdAlert = async (req, res) => {
 export const toggleShepherdAlert = async (req, res) => {
   try {
     const { id } = req.params;
-    const { organizationId } = req.user;
+    const organizationId = req.organizationId;
 
     const alert = await ShepherdAlert.findOne({ _id: id, organizationId });
 
@@ -248,7 +262,7 @@ export const toggleShepherdAlert = async (req, res) => {
 export const runShepherdAlertCheck = async (req, res) => {
   try {
     const { id } = req.params;
-    const { organizationId } = req.user;
+    const organizationId = req.organizationId;
 
     const alert = await ShepherdAlert.findOne({
       _id: id,
@@ -287,7 +301,7 @@ export const runShepherdAlertCheck = async (req, res) => {
  */
 export const getShepherdAlertLogs = async (req, res) => {
   try {
-    const { organizationId } = req.user;
+    const organizationId = req.organizationId;
     const { shepherdAlertId, memberId, triggered } = req.query;
 
     const filter = { organizationId };
