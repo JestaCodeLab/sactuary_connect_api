@@ -80,53 +80,6 @@ export const getCreditTransactions = async (req, res) => {
   }
 };
 
-// Purchase SMS credits
-export const purchaseCredits = async (req, res) => {
-  try {
-    const merchantId = req.user.organizationId;
-    const { amount, transactionId, paymentMethod } = req.body;
-
-    if (!amount || amount <= 0) {
-      return res.status(400).json({ error: 'Invalid credit amount' });
-    }
-
-    const smsCredit = await SmsCredit.getOrCreate(merchantId, 0);
-
-    await smsCredit.addCredits(
-      amount,
-      'purchase',
-      `Credits purchased via ${paymentMethod || 'payment'}`,
-      transactionId
-    );
-
-    // Record in unified transaction ledger
-    await Transaction.create({
-      organizationId: merchantId,
-      type: 'sms_credit_purchase',
-      direction: 'outflow',
-      amount,
-      currency: 'GHS',
-      status: 'completed',
-      paymentMethod,
-      providerReference: transactionId,
-      relatedModel: 'SmsCredit',
-      relatedId: smsCredit._id,
-      description: `Purchased ${amount} SMS credits`,
-      initiatedBy: req.user.userId,
-      metadata: { creditsAmount: amount },
-    });
-
-    res.json({
-      success: true,
-      message: `Successfully added ${amount} SMS credits`,
-      balance: smsCredit.balance
-    });
-  } catch (error) {
-    console.error('Purchase credits error:', error);
-    res.status(500).json({ error: error.message });
-  }
-};
-
 // Initialize SMS credit purchase (calculate cost & create payment record)
 export const initializeSmsPayment = async (req, res) => {
   try {
@@ -228,6 +181,20 @@ export const verifySmsPayment = async (req, res) => {
     } else if (payment.organizationId.toString() !== organizationId.toString()) {
       // Prevent one organization from using another's payment
       return res.status(403).json({ error: 'Payment does not belong to your organization' });
+    } else if (payment.status === 'completed') {
+      // Already processed - return the prior result instead of re-crediting.
+      // Without this, verifying the same reference twice (e.g. a retried
+      // client callback) would add the credits a second time.
+      const existingCredit = await SmsCredit.getOrCreate(organizationId, 0);
+      return res.json({
+        success: true,
+        message: `Successfully purchased ${payment.credits} SMS credits`,
+        credits: payment.credits,
+        amount: payment.amountInGhs,
+        newBalance: existingCredit.balance,
+        paystackReference,
+        alreadyProcessed: true,
+      });
     } else {
       payment.status = 'verified';
       payment.paymentMethod = data.channel;
@@ -562,6 +529,7 @@ export const sendToBranch = async (req, res) => {
 
     // Count branch members
     const memberCount = await Member.countDocuments({
+      organizationId: merchantId,
       branchId,
       phone: { $exists: true, $ne: '' }
     });
@@ -623,6 +591,7 @@ export const sendToDepartment = async (req, res) => {
 
     // Count department members
     const memberCount = await Member.countDocuments({
+      organizationId: merchantId,
       departments: departmentId,
       phone: { $exists: true, $ne: '' }
     });

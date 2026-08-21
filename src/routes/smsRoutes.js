@@ -3,7 +3,6 @@ import {
   getCreditsBalance,
   getBmsBalance,
   getCreditTransactions,
-  purchaseCredits,
   initializeSmsPayment,
   verifySmsPayment,
   sendSingleSMS,
@@ -46,7 +45,6 @@ router.use(resolveBranchContext);
 router.get('/credits/balance', requireFeature('sms_credits'), getCreditsBalance);
 router.get('/credits/bms-balance', requireFeature('sms_credits'), getBmsBalance);
 router.get('/credits/transactions', requireFeature('sms_credits'), getCreditTransactions);
-router.post('/credits/purchase', requireFeature('sms_credits'), purchaseCredits);
 router.post('/credits/initialize-payment', requireFeature('sms_credits'), initializeSmsPayment);
 router.post('/credits/verify-payment', requireFeature('sms_credits'), verifySmsPayment);
 

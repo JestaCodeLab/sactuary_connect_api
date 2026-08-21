@@ -396,7 +396,8 @@ export const getSubscription = async (req, res) => {
     res.json({
       subscription,
       plan,
-      isActive: subscription.status === 'active' || subscription.status === 'trialing',
+      isActive: (subscription.status === 'active' || subscription.status === 'trialing')
+        && subscription.currentPeriodEnd >= new Date(),
     });
   } catch (error) {
     console.error('❌ [GET SUBSCRIPTION] Error fetching subscription:', error);
@@ -419,11 +420,59 @@ export const updateSubscription = async (req, res) => {
       return res.status(404).json({ error: 'Subscription not found' });
     }
 
+    const oldPlanId = subscription.planId;
+
     // If changing plan, validate new plan
     if (planId && planId !== subscription.planId) {
       const newPlan = getPlanById(planId);
       if (!newPlan) {
         return res.status(400).json({ error: 'Invalid plan ID' });
+      }
+
+      const currentPlan = getPlanById(subscription.planId);
+
+      // Enterprise/custom-priced plans aren't self-serve - requires manual provisioning.
+      if (newPlan.price === null) {
+        return res.status(400).json({
+          error: `${newPlan.name} uses custom pricing and can't be self-selected. Please contact us to set this up.`,
+          code: 'PLAN_REQUIRES_MANUAL_SETUP',
+        });
+      }
+
+      // Any move to a paid plan that costs more than the current one requires
+      // completing a real payment first - this endpoint must not be able to
+      // grant paid tiers for free. Use initializeUpgrade/verifyUpgrade instead.
+      if (newPlan.price > 0 && newPlan.price > (currentPlan?.price || 0)) {
+        return res.status(400).json({
+          error: 'Upgrading to a paid plan requires completing payment first.',
+          code: 'PAYMENT_REQUIRED',
+        });
+      }
+
+      // Downgrading (or moving to a cheaper/free plan): block if current usage
+      // would already exceed the new plan's limits, since nothing reconciles
+      // over-limit orgs after the fact.
+      const [membersCount, branchesCount, departmentsCount, eventsCount] = await Promise.all([
+        Member.countDocuments({ organizationId }),
+        Branch.countDocuments({ organizationId }),
+        Department.countDocuments({ organizationId }),
+        Event.countDocuments({ organizationId }),
+      ]);
+
+      const usageChecks = [
+        { label: 'members', current: membersCount, limit: newPlan.limits.maxMembers },
+        { label: 'branches', current: branchesCount, limit: newPlan.limits.maxBranches },
+        { label: 'departments', current: departmentsCount, limit: newPlan.limits.maxDepartments },
+        { label: 'events', current: eventsCount, limit: newPlan.limits.maxEvents },
+      ];
+      const overLimit = usageChecks.filter(c => c.limit !== -1 && c.current > c.limit);
+
+      if (overLimit.length > 0) {
+        return res.status(400).json({
+          error: `Cannot switch to ${newPlan.name}: current usage exceeds its limits.`,
+          code: 'USAGE_EXCEEDS_PLAN_LIMITS',
+          overLimit,
+        });
       }
 
       subscription.planId = planId;
@@ -463,7 +512,6 @@ export const updateSubscription = async (req, res) => {
       subscription.billingAddress = billingAddress;
     }
 
-    const oldPlanId = subscription.planId;
     await subscription.save();
 
     const plan = getPlanById(subscription.planId);
@@ -472,7 +520,7 @@ export const updateSubscription = async (req, res) => {
     // Send notification for plan change
     if (planId && planId !== oldPlanId) {
       try {
-        const isUpgrade = plan.tier > oldPlan.tier;
+        const isUpgrade = plan.price > (oldPlan?.price || 0);
         await notificationService.createNotification(
           req.user.userId,
           organizationId,
@@ -614,6 +662,68 @@ export const reactivateSubscription = async (req, res) => {
 };
 
 /**
+ * Renew the current subscription on the SAME plan (e.g. after it lapsed).
+ * POST /api/subscriptions/:organizationId/renew
+ *
+ * Free plans renew immediately, no payment needed. Paid plans must go
+ * through the normal Paystack checkout (initializeUpgrade/verifyUpgrade) -
+ * this endpoint deliberately does not grant a new paid period for free.
+ * Kept separate from reactivateSubscription, which only handles explicitly
+ * cancelled subscriptions and is not payment-aware.
+ */
+export const renewSubscription = async (req, res) => {
+  try {
+    const { organizationId } = req.params;
+
+    const subscription = await Subscription.findOne({ organizationId });
+    if (!subscription) {
+      return res.status(404).json({ error: 'Subscription not found' });
+    }
+
+    const plan = getPlanById(subscription.planId);
+    if (!plan) {
+      return res.status(400).json({ error: 'Invalid plan on subscription' });
+    }
+
+    if (plan.price > 0) {
+      return res.status(400).json({
+        error: 'Paid plans are renewed by completing checkout for the same plan.',
+        code: 'PAYMENT_REQUIRED',
+      });
+    }
+
+    const now = new Date();
+    subscription.status = 'active';
+    subscription.cancelAtPeriodEnd = false;
+    subscription.currentPeriodStart = now;
+    subscription.currentPeriodEnd = subscription.billingCycle === 'annual'
+      ? new Date(new Date(now).setFullYear(now.getFullYear() + 1))
+      : new Date(new Date(now).setMonth(now.getMonth() + 1));
+
+    subscription.paymentHistory.push({
+      reference: `renew_${organizationId}_${now.getTime()}`,
+      amount: 0,
+      currency: plan.currency,
+      planId: plan.id,
+      type: 'renewal',
+      status: 'completed',
+      paidAt: now,
+    });
+
+    await subscription.save();
+
+    res.json({
+      message: `${plan.name} renewed successfully`,
+      subscription,
+      plan,
+    });
+  } catch (error) {
+    console.error('Error renewing subscription:', error);
+    res.status(500).json({ error: 'Failed to renew subscription' });
+  }
+};
+
+/**
  * Check feature access for an organization
  * GET /api/subscriptions/:organizationId/features/:featureKey
  */
@@ -629,10 +739,12 @@ export const checkFeature = async (req, res) => {
 
     const plan = getPlanById(subscription.planId);
     const feature = plan?.features.find(f => f.key === featureKey);
+    const isActive = (subscription.status === 'active' || subscription.status === 'trialing')
+      && subscription.currentPeriodEnd >= new Date();
 
     res.json({
       featureKey,
-      hasAccess: feature?.included || false,
+      hasAccess: isActive && (feature?.included || false),
       planId: subscription.planId,
       planName: plan?.name,
     });
@@ -878,6 +990,22 @@ export const verifyUpgrade = async (req, res) => {
       return res.status(400).json({ error: 'Invalid plan ID' });
     }
 
+    // IDEMPOTENCY CHECK: this reference may already have been processed by a
+    // prior call (e.g. a retried client callback). Without this, replaying the
+    // same reference would re-apply the plan change, duplicate the billing
+    // history/Transaction entry, and re-credit SMS credits a second time.
+    const alreadyProcessed = subscription.paymentHistory?.some(
+      p => p.reference === reference && p.paidAt
+    );
+    if (alreadyProcessed) {
+      return res.json({
+        message: `Already processed - subscription is on ${newPlan.name}`,
+        subscription,
+        plan: newPlan,
+        alreadyProcessed: true,
+      });
+    }
+
     // Verify with Paystack
     const verification = await verifyTransaction(reference);
     if (!verification.verified) {
@@ -927,6 +1055,7 @@ export const verifyUpgrade = async (req, res) => {
       paidAt: verification.data.paidAt || new Date(),
       planId,
       type: isUpgrade ? 'upgrade' : 'renewal',
+      status: 'completed',
     });
 
     await subscription.save();
@@ -1036,6 +1165,7 @@ export default {
   updateSubscription,
   cancelSubscription,
   reactivateSubscription,
+  renewSubscription,
   checkFeature,
   checkLimits,
   updateUsage,

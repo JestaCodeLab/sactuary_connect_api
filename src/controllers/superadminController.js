@@ -1041,6 +1041,7 @@ export const getFinanceAccountDetails = async (req, res) => {
     const { id } = req.params;
 
     const account = await FinanceAccount.findById(id)
+      .select('-paystackSecretKey')
       .populate('organizationId', 'churchName legalName')
       .populate('submittedBy', 'firstName lastName email')
       .populate('approvedBy', 'firstName lastName email')

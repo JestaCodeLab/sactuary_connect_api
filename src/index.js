@@ -13,6 +13,7 @@ import { initServiceCodeGenerationJob } from './jobs/serviceCodeGenerationJob.js
 import { initShepherdAlertJob } from './jobs/shepherdAlertJob.js';
 import { initEventReminderJob } from './jobs/eventReminderJob.js';
 import { startSmsDeliveryStatusJob } from './jobs/smsDeliveryStatusJob.js';
+import { initSubscriptionExpiryJob } from './jobs/subscriptionExpiryJob.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -109,6 +110,9 @@ const startServer = async () => {
 
     // Start SMS delivery status polling job (every 5 minutes)
     startSmsDeliveryStatusJob();
+
+    // Start subscription expiry notification job (8:30 AM daily)
+    initSubscriptionExpiryJob();
 
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);

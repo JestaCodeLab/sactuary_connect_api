@@ -21,14 +21,56 @@ const getMinimumPlan = (featureKey) => {
  * Must be used after authenticateToken middleware.
  *
  * Usage: router.get('/path', authenticateToken, requireFeature('feature_key'), handler)
- * 
- * TEMPORARILY DISABLED: Feature gating is disabled for development/debugging
  */
 export const requireFeature = (featureKey) => {
   return async (req, res, next) => {
-    // TEMPORARILY DISABLED - allow all requests through
-    console.log(`[FeatureGate] DISABLED - bypassing feature check for "${featureKey}"`);
-    next();
+    try {
+      // Distinct from the finance-module's NO_ORG_CONTEXT code - practically
+      // unreachable for a normal authenticated request, but kept separate so
+      // the client's finance-gate handling never accidentally swallows it.
+      const organizationId = req.user?.organizationId || req.organizationId;
+
+      if (!organizationId) {
+        return res.status(403).json({ error: 'Organization context required', code: 'NO_ORGANIZATION' });
+      }
+
+      const subscription = await Subscription.findOne({ organizationId });
+
+      // No subscription at all (e.g. mid-onboarding) - send to onboarding
+      // rather than the "upgrade your plan" feature-blocked page.
+      if (!subscription) {
+        return res.status(403).json({ error: 'No subscription found for this organization', code: 'NO_SUB' });
+      }
+
+      const isActive = (subscription.status === 'active' || subscription.status === 'trialing')
+        && subscription.currentPeriodEnd >= new Date();
+
+      if (!isActive) {
+        return res.status(403).json({
+          error: 'Your subscription is inactive or has expired. Please renew to continue.',
+          code: 'SUBSCRIPTION_INACTIVE',
+          featureKey,
+        });
+      }
+
+      const plan = PLANS[subscription.planId];
+      const feature = plan?.features.find(f => f.key === featureKey);
+
+      if (!feature?.included) {
+        return res.status(403).json({
+          error: 'This feature is not included in your current plan',
+          code: 'FEATURE_NOT_INCLUDED',
+          featureKey,
+          currentPlan: subscription.planId,
+          minimumPlan: getMinimumPlan(featureKey),
+        });
+      }
+
+      next();
+    } catch (error) {
+      console.error('Error in requireFeature middleware:', error);
+      res.status(500).json({ error: 'Failed to verify feature access' });
+    }
   };
 };
 

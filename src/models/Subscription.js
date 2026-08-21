@@ -39,6 +39,12 @@ const subscriptionSchema = new mongoose.Schema({
   cancelledAt: Date,
   trialEndsAt: Date,
 
+  // Expiry reminder tracking - lets the cron job avoid re-sending the same
+  // reminder on every run. Compared against currentPeriodStart so a renewal
+  // (which resets currentPeriodStart) naturally allows fresh reminders next cycle.
+  expiryReminderSentAt: Date,
+  expiredNotificationSentAt: Date,
+
   // Payment info
   paymentMethod: {
     type: String,
@@ -92,6 +98,11 @@ const subscriptionSchema = new mongoose.Schema({
       type: String,
       enum: ['initial', 'upgrade', 'renewal', 'downgrade'],
     },
+    status: {
+      type: String,
+      enum: ['pending', 'completed'],
+    },
+    metadata: mongoose.Schema.Types.Mixed,
   }],
 
   // Metadata

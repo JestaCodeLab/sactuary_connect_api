@@ -141,6 +141,72 @@ export const sendInviteEmail = async (email, inviterName, churchName, token) => 
 };
 
 /**
+ * Send subscription-expiring-soon reminder email
+ */
+export const sendSubscriptionExpiringEmail = async (email, name, churchName, planName, daysLeft, expiryDate, renewLink) => {
+  try {
+    if (!hasEmailConfig) {
+      console.warn('⚠️  EMAIL not configured. Subscription expiring soon for:', churchName);
+      return true;
+    }
+
+    const { subject, html, text } = emailTemplates.subscriptionExpiringSoon(name, churchName, planName, daysLeft, expiryDate, renewLink);
+
+    const result = await sendEmailWithRetry({
+      from: EMAIL_FROM,
+      to: [email],
+      subject,
+      html,
+      text,
+    }, 2);
+
+    if (!result.success) {
+      console.error('❌ Error sending subscription-expiring email:', result.error?.message);
+      return false;
+    }
+
+    console.log('✓ Subscription-expiring email sent to:', email);
+    return true;
+  } catch (error) {
+    console.error('❌ Unexpected error in sendSubscriptionExpiringEmail:', error.message);
+    return false;
+  }
+};
+
+/**
+ * Send subscription-expired notice email
+ */
+export const sendSubscriptionExpiredEmail = async (email, name, churchName, planName, renewLink) => {
+  try {
+    if (!hasEmailConfig) {
+      console.warn('⚠️  EMAIL not configured. Subscription expired for:', churchName);
+      return true;
+    }
+
+    const { subject, html, text } = emailTemplates.subscriptionExpired(name, churchName, planName, renewLink);
+
+    const result = await sendEmailWithRetry({
+      from: EMAIL_FROM,
+      to: [email],
+      subject,
+      html,
+      text,
+    }, 2);
+
+    if (!result.success) {
+      console.error('❌ Error sending subscription-expired email:', result.error?.message);
+      return false;
+    }
+
+    console.log('✓ Subscription-expired email sent to:', email);
+    return true;
+  } catch (error) {
+    console.error('❌ Unexpected error in sendSubscriptionExpiredEmail:', error.message);
+    return false;
+  }
+};
+
+/**
  * Send welcome email
  */
 export const sendWelcomeEmail = async (email, churchName) => {

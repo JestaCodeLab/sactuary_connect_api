@@ -21,6 +21,8 @@ const notificationSchema = new mongoose.Schema({
       'subscription_downgraded',
       'subscription_trial_ending',
       'subscription_trial_ended',
+      'subscription_expiring_soon',
+      'subscription_expired',
       'plan_limit_reached',
       'plan_limit_warning',
       'past_due_payment',

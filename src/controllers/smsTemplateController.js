@@ -29,6 +29,7 @@ export const getTemplate = async (req, res) => {
     const template = await SmsTemplate.findOne({
       _id: id,
       organizationId,
+      isActive: true,
     });
 
     if (!template) {
@@ -96,6 +97,7 @@ export const updateTemplate = async (req, res) => {
     const template = await SmsTemplate.findOne({
       _id: id,
       organizationId,
+      isActive: true,
     });
 
     if (!template) {
@@ -138,6 +140,7 @@ export const deleteTemplate = async (req, res) => {
     const template = await SmsTemplate.findOne({
       _id: id,
       organizationId,
+      isActive: true,
     });
 
     if (!template) {
@@ -166,6 +169,7 @@ export const duplicateTemplate = async (req, res) => {
     const original = await SmsTemplate.findOne({
       _id: id,
       organizationId,
+      isActive: true,
     });
 
     if (!original) {

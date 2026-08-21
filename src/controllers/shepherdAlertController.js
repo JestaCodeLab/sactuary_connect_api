@@ -302,12 +302,36 @@ export const runShepherdAlertCheck = async (req, res) => {
 export const getShepherdAlertLogs = async (req, res) => {
   try {
     const organizationId = req.organizationId;
-    const { shepherdAlertId, memberId, triggered } = req.query;
+    const { shepherdAlertId, memberId, triggered, runLimit } = req.query;
 
     const filter = { organizationId };
     if (shepherdAlertId) filter.shepherdAlertId = shepherdAlertId;
     if (memberId) filter.memberId = memberId;
     if (triggered !== undefined) filter.triggerred = triggered === 'true';
+
+    // When scoped to a single alert, page by *run* (checkPeriodEnd) instead
+    // of by individual log row. Each executeShepherdAlertCheck() run writes
+    // one log per member checked - a single run can easily be 100+ logs for
+    // a large org, so a flat row-count limit could cut off partway through
+    // a run (some members shown, others silently missing) instead of
+    // cleanly stopping between runs.
+    if (shepherdAlertId) {
+      const limit = Math.min(parseInt(runLimit, 10) || 10, 50);
+
+      const distinctRuns = await ShepherdAlertLog.distinct('checkPeriodEnd', filter);
+      const sortedRuns = distinctRuns.sort((a, b) => new Date(b) - new Date(a));
+      const pageRuns = sortedRuns.slice(0, limit);
+
+      const logs = pageRuns.length > 0
+        ? await ShepherdAlertLog.find({ ...filter, checkPeriodEnd: { $in: pageRuns } })
+            .populate('shepherdAlertId', 'name')
+            .populate('memberId', 'firstName lastName')
+            .populate('eventId', 'name')
+            .sort({ checkPeriodEnd: -1, createdAt: -1 })
+        : [];
+
+      return res.json({ logs, totalRuns: sortedRuns.length, runsReturned: pageRuns.length });
+    }
 
     const logs = await ShepherdAlertLog.find(filter)
       .populate('shepherdAlertId', 'name')

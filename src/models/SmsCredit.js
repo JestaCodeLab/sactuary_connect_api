@@ -67,51 +67,72 @@ const smsCreditSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Method to add credits
+// Method to add credits. Uses an atomic $inc (via aggregation-pipeline update)
+// rather than read-modify-write, so two concurrent calls (e.g. a purchase and
+// a plan-renewal bonus landing at the same time) can't lose one increment.
 smsCreditSchema.methods.addCredits = async function(amount, type = 'purchase', description = '', reference = '') {
-  this.balance += amount;
-  this.totalPurchased += amount;
-  
+  const setStage = {
+    balance: { $add: ['$balance', amount] },
+    totalPurchased: { $add: ['$totalPurchased', amount] },
+  };
   if (type === 'purchase') {
-    this.lastPurchase = {
-      amount,
-      date: new Date(),
-      transactionId: reference
-    };
+    setStage.lastPurchase = { amount, date: new Date(), transactionId: reference };
   }
 
-  this.transactions.push({
-    type,
-    amount,
-    balance: this.balance,
-    description,
-    reference,
-    createdAt: new Date()
-  });
+  const updated = await this.constructor.findOneAndUpdate(
+    { _id: this._id },
+    [
+      { $set: setStage },
+      {
+        $set: {
+          transactions: {
+            $concatArrays: [
+              '$transactions',
+              [{ type, amount, balance: '$balance', description, reference, createdAt: new Date() }],
+            ],
+          },
+        },
+      },
+    ],
+    { new: true }
+  );
 
-  await this.save();
+  Object.assign(this, updated.toObject());
   return this;
 };
 
-// Method to deduct credits
+// Method to deduct credits. Atomic conditional decrement (balance >= amount
+// is enforced by the DB, not by a prior read), so two concurrent sends racing
+// against a low balance can't both pass the check and drive it negative.
 smsCreditSchema.methods.deductCredits = async function(amount, description = '', reference = '') {
-  if (this.balance < amount) {
+  const updated = await this.constructor.findOneAndUpdate(
+    { _id: this._id, balance: { $gte: amount } },
+    [
+      {
+        $set: {
+          balance: { $subtract: ['$balance', amount] },
+          totalUsed: { $add: ['$totalUsed', amount] },
+        },
+      },
+      {
+        $set: {
+          transactions: {
+            $concatArrays: [
+              '$transactions',
+              [{ type: 'usage', amount: -amount, balance: '$balance', description, reference, createdAt: new Date() }],
+            ],
+          },
+        },
+      },
+    ],
+    { new: true }
+  );
+
+  if (!updated) {
     throw new Error('Insufficient SMS credits');
   }
 
-  this.balance -= amount;
-  this.totalUsed += amount;
-
-  this.transactions.push({
-    type: 'usage',
-    amount: -amount,
-    balance: this.balance,
-    description,
-    reference,
-    createdAt: new Date()
-  });
-
-  await this.save();
+  Object.assign(this, updated.toObject());
   return this;
 };
 
