@@ -27,7 +27,7 @@ export const PLANS = {
       { key: 'online_giving', name: 'Online Giving & Donations (20 transactions/month)', included: true },
       { key: 'attendance_tracking', name: 'Attendance Tracking', included: false },
       { key: 'ai_shepherd_alerts', name: 'AI "Shepherd" Alerts', included: false },
-      { key: 'sms_credits', name: 'SMS Credits', included: false },
+      { key: 'sms_credits', name: 'SMS Communication (pay-as-you-go)', included: true },
       { key: 'group_dues', name: 'Group Dues Module', included: false },
       { key: 'financial_reporting', name: 'Financial Reporting', included: false },
       { key: 'event_management', name: 'Event Management', included: false },
