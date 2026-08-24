@@ -2,9 +2,25 @@ import Department from '../models/Department.js';
 import { branchFilter, resolveCreateBranch } from '../utils/branchQuery.js';
 import { checkDepartmentLimit } from '../utils/usageLimits.js';
 
+// Adds an allowedDepartmentIds restriction to a query filter when the
+// requester is department-scoped (req.allowedDepartmentIds set by
+// resolveDepartmentContext for role==='custom' users only - null/unset for
+// everyone else, unrestricted). ANDs with any existing _id (e.g. a specific
+// :id lookup) rather than overwriting it - a naive {...filter, _id: {$in}}
+// would silently discard a single-id filter and match on scope alone.
+const withDepartmentScope = (filter, req) => {
+  if (!req.allowedDepartmentIds) {
+    return filter;
+  }
+  if (filter._id) {
+    return { ...filter, _id: { $eq: filter._id, $in: req.allowedDepartmentIds } };
+  }
+  return { ...filter, _id: { $in: req.allowedDepartmentIds } };
+};
+
 export const getAllDepartments = async (req, res) => {
   try {
-    const departments = await Department.find(branchFilter(req))
+    const departments = await Department.find(withDepartmentScope(branchFilter(req), req))
       .populate('branchId', 'name')
       .populate('leaderId', 'firstName lastName email')
       .populate('members', 'firstName lastName email phone memberStatus')
@@ -20,7 +36,7 @@ export const getAllDepartments = async (req, res) => {
 export const getDepartmentById = async (req, res) => {
   try {
     const { id } = req.params;
-    const department = await Department.findById(id)
+    const department = await Department.findOne(withDepartmentScope({ _id: id, organizationId: req.organizationId }, req))
       .populate('branchId', 'name')
       .populate('leaderId', 'firstName lastName email')
       .populate('members', 'firstName lastName email phone memberStatus');
@@ -93,7 +109,11 @@ export const updateDepartment = async (req, res) => {
         : [];
     }
 
-    const department = await Department.findByIdAndUpdate(id, updates, { new: true })
+    const department = await Department.findOneAndUpdate(
+      withDepartmentScope({ _id: id, organizationId: req.organizationId }, req),
+      updates,
+      { new: true }
+    )
       .populate('branchId', 'name')
       .populate('leaderId', 'firstName lastName email')
       .populate('members', 'firstName lastName email phone memberStatus');
@@ -112,7 +132,9 @@ export const updateDepartment = async (req, res) => {
 export const deleteDepartment = async (req, res) => {
   try {
     const { id } = req.params;
-    const department = await Department.findByIdAndDelete(id);
+    const department = await Department.findOneAndDelete(
+      withDepartmentScope({ _id: id, organizationId: req.organizationId }, req)
+    );
 
     if (!department) {
       return res.status(404).json({ error: 'Department not found' });
@@ -134,7 +156,9 @@ export const addMemberToDepartment = async (req, res) => {
       return res.status(400).json({ error: 'Member ID is required' });
     }
 
-    const department = await Department.findById(id);
+    const department = await Department.findOne(
+      withDepartmentScope({ _id: id, organizationId: req.organizationId }, req)
+    );
     if (!department) {
       return res.status(404).json({ error: 'Department not found' });
     }
@@ -163,7 +187,9 @@ export const removeMemberFromDepartment = async (req, res) => {
   try {
     const { id, memberId } = req.params;
 
-    const department = await Department.findById(id);
+    const department = await Department.findOne(
+      withDepartmentScope({ _id: id, organizationId: req.organizationId }, req)
+    );
     if (!department) {
       return res.status(404).json({ error: 'Department not found' });
     }

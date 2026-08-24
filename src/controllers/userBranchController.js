@@ -1,6 +1,9 @@
 import UserBranch from '../models/UserBranch.js';
+import UserDepartment from '../models/UserDepartment.js';
 import User from '../models/User.js';
 import Branch from '../models/Branch.js';
+import Organization from '../models/Organization.js';
+import Role from '../models/Role.js';
 
 /**
  * GET /api/users/me/branches
@@ -53,25 +56,117 @@ export const getOrgUsers = async (req, res) => {
       organizationId: orgId,
     }).populate('branchId', 'name');
 
-    // Group assignments by userId
-    const assignmentMap = {};
+    // Group branch assignments by userId
+    const branchMap = {};
     assignments.forEach(a => {
       const uid = a.userId.toString();
-      if (!assignmentMap[uid]) assignmentMap[uid] = [];
+      if (!branchMap[uid]) branchMap[uid] = [];
       if (a.branchId) {
-        assignmentMap[uid].push(a.branchId);
+        branchMap[uid].push(a.branchId);
       }
     });
 
+    // Group department assignments by userId
+    const deptAssignments = await UserDepartment.find({
+      userId: { $in: userIds },
+      organizationId: orgId,
+    }).populate('departmentId', 'name');
+    const departmentMap = {};
+    deptAssignments.forEach(a => {
+      const uid = a.userId.toString();
+      if (!departmentMap[uid]) departmentMap[uid] = [];
+      if (a.departmentId) {
+        departmentMap[uid].push(a.departmentId);
+      }
+    });
+
+    // Resolve custom role names
+    const customRoleIds = users.map(u => u.customRoleId).filter(Boolean);
+    const customRoles = customRoleIds.length > 0
+      ? await Role.find({ _id: { $in: customRoleIds } }).select('name isActive')
+      : [];
+    const roleMap = Object.fromEntries(customRoles.map(r => [r._id.toString(), r]));
+
     const usersWithBranches = users.map(u => ({
       ...u.toObject(),
-      branches: assignmentMap[u._id.toString()] || [],
+      branches: branchMap[u._id.toString()] || [],
+      departments: departmentMap[u._id.toString()] || [],
+      customRole: u.customRoleId ? roleMap[u.customRoleId.toString()] || null : null,
     }));
 
     res.json(usersWithBranches);
   } catch (error) {
     console.error('Error fetching org users:', error);
     res.status(500).json({ error: 'Failed to fetch users' });
+  }
+};
+
+/**
+ * PATCH /api/organizations/:orgId/users/:userId/role
+ * Reassign an existing team member's role (and optionally their branch/
+ * department scope in the same step). Admin only.
+ */
+export const updateUserRole = async (req, res) => {
+  try {
+    const { orgId, userId } = req.params;
+    const { role, customRoleId, branchIds, departmentIds } = req.body;
+
+    const VALID_ROLES = ['admin', 'pastor', 'staff', 'member', 'custom'];
+    if (!role || !VALID_ROLES.includes(role)) {
+      return res.status(400).json({ error: `role must be one of: ${VALID_ROLES.join(', ')}` });
+    }
+
+    if (userId === req.user.userId) {
+      return res.status(400).json({ error: 'You cannot change your own role' });
+    }
+
+    const organization = await Organization.findById(orgId);
+    if (!organization) {
+      return res.status(404).json({ error: 'Organization not found' });
+    }
+    if (organization.adminId.toString() === userId) {
+      return res.status(400).json({ error: "The organization owner's role can't be changed here" });
+    }
+
+    const user = await User.findOne({ _id: userId, organizationId: orgId });
+    if (!user) {
+      return res.status(404).json({ error: 'User not found in this organization' });
+    }
+
+    if (role === 'custom') {
+      if (!customRoleId) {
+        return res.status(400).json({ error: 'customRoleId is required when role is "custom"' });
+      }
+      const customRole = await Role.findOne({ _id: customRoleId, organizationId: orgId, isActive: true });
+      if (!customRole) {
+        return res.status(400).json({ error: 'Invalid or inactive custom role' });
+      }
+      user.customRoleId = customRoleId;
+    } else {
+      user.customRoleId = null;
+    }
+
+    user.role = role;
+    await user.save();
+
+    if (Array.isArray(branchIds)) {
+      await UserBranch.deleteMany({ userId, organizationId: orgId });
+      if (branchIds.length > 0) {
+        await UserBranch.insertMany(branchIds.map(branchId => ({ userId, branchId, organizationId: orgId })));
+      }
+    }
+
+    if (Array.isArray(departmentIds)) {
+      await UserDepartment.deleteMany({ userId, organizationId: orgId });
+      if (departmentIds.length > 0) {
+        await UserDepartment.insertMany(departmentIds.map(departmentId => ({ userId, departmentId, organizationId: orgId })));
+      }
+    }
+
+    res.json({ message: 'Role updated successfully', user: { ...user.toObject(), passwordHash: undefined } });
+  } catch (error) {
+    console.error('Error updating user role:', error);
+    res.status(500).json({ error: 'Failed to update user role' });
   }
 };
 
@@ -157,4 +252,5 @@ export default {
   getOrgUsers,
   assignBranches,
   removeBranch,
+  updateUserRole,
 };
