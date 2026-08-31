@@ -17,7 +17,7 @@ import {
   getServiceCode,
   regenerateServiceCode,
 } from '../controllers/eventController.js';
-import { authenticateToken, authorizeRole } from '../middleware/auth.js';
+import { authenticateToken, authorizeRoleOrPermission } from '../middleware/auth.js';
 import { resolveBranchContext } from '../middleware/branchContext.js';
 import { requireFeature } from '../middleware/featureGate.js';
 import { publicCheckInLimiter } from '../middleware/rateLimiter.js';
@@ -32,19 +32,19 @@ router.get('/check-in/:token/members', publicCheckInLimiter, searchMembersForChe
 // Authenticated routes
 router.get('/', authenticateToken, resolveBranchContext, requireFeature('event_management'), getAllEvents);
 router.get('/:id', authenticateToken, resolveBranchContext, requireFeature('event_management'), getEventById);
-router.post('/', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), requireFeature('event_management'), createEvent);
-router.put('/:id', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), requireFeature('event_management'), updateEvent);
-router.delete('/:id', authenticateToken, resolveBranchContext, authorizeRole(['admin']), requireFeature('event_management'), deleteEvent);
+router.post('/', authenticateToken, resolveBranchContext, authorizeRoleOrPermission(['admin', 'pastor'], 'events.manage'), requireFeature('event_management'), createEvent);
+router.put('/:id', authenticateToken, resolveBranchContext, authorizeRoleOrPermission(['admin', 'pastor'], 'events.manage'), requireFeature('event_management'), updateEvent);
+router.delete('/:id', authenticateToken, resolveBranchContext, authorizeRoleOrPermission(['admin'], 'events.manage'), requireFeature('event_management'), deleteEvent);
 router.get('/:id/occurrences', authenticateToken, resolveBranchContext, requireFeature('event_management'), getUpcomingOccurrences);
 router.post('/:eventId/register', authenticateToken, resolveBranchContext, requireFeature('event_management'), registerForEvent);
 
 // QR code routes
-router.post('/:id/qr-code', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), requireFeature('event_management'), generateQRCode);
+router.post('/:id/qr-code', authenticateToken, resolveBranchContext, authorizeRoleOrPermission(['admin', 'pastor'], 'events.manage'), requireFeature('event_management'), generateQRCode);
 router.get('/:id/qr-code', authenticateToken, resolveBranchContext, requireFeature('event_management'), getQRCode);
 
 // Service code routes (for recurring events)
 router.get('/:id/service-code', authenticateToken, resolveBranchContext, getServiceCode);
-router.post('/:id/service-code', authenticateToken, resolveBranchContext, authorizeRole(['admin', 'pastor']), regenerateServiceCode);
+router.post('/:id/service-code', authenticateToken, resolveBranchContext, authorizeRoleOrPermission(['admin', 'pastor'], 'events.manage'), regenerateServiceCode);
 
 // Sharing routes (feature-gated)
 router.post('/:id/share', authenticateToken, resolveBranchContext, requireFeature('event_sharing'), generateShareLink);

@@ -51,6 +51,9 @@ const notificationSchema = new mongoose.Schema({
       'password_changed',
       'suspicious_activity',
       'account_created',
+      // Support
+      'support_ticket_submitted',
+      'support_ticket_reply',
     ],
     required: true,
   },

@@ -1,6 +1,7 @@
 import { verifyToken } from '../config/jwt.js';
 import Organization from '../models/Organization.js';
 import User from '../models/User.js';
+import Role from '../models/Role.js';
 
 export const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
@@ -42,6 +43,58 @@ export const authorizeRole = (allowedRoles) => {
         req.user.role = user.role;
         req.user.organizationId = user.organizationId?.toString() || null;
         return next();
+      }
+
+      return res.status(403).json({ error: 'Forbidden - insufficient permissions' });
+    } catch (error) {
+      console.error('Authorization check error:', error);
+      return res.status(500).json({ error: 'Authorization check failed' });
+    }
+  };
+};
+
+/**
+ * Additive superset of authorizeRole: passes for any of the static
+ * allowedRoles (identical fast path to authorizeRole, unchanged behavior
+ * for every existing user), OR for a role:'custom' user whose assigned
+ * Role grants permissionKey. Only 'custom' users can ever reach the
+ * permission-check branch, so this is a no-op for everyone else.
+ */
+export const authorizeRoleOrPermission = (allowedRoles, permissionKey) => {
+  return async (req, res, next) => {
+    if (!req.user) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    if (allowedRoles.includes(req.user.role)) {
+      return next();
+    }
+
+    try {
+      const user = await User.findById(req.user.userId);
+      if (!user) {
+        return res.status(401).json({ error: 'User not found' });
+      }
+
+      if (allowedRoles.includes(user.role)) {
+        req.user.role = user.role;
+        req.user.organizationId = user.organizationId?.toString() || null;
+        return next();
+      }
+
+      if (user.role === 'custom' && user.customRoleId) {
+        const customRole = await Role.findOne({
+          _id: user.customRoleId,
+          organizationId: user.organizationId,
+          isActive: true,
+        }).lean();
+
+        if (customRole?.permissions?.includes(permissionKey)) {
+          req.user.role = user.role;
+          req.user.organizationId = user.organizationId?.toString() || null;
+          req.user.customRoleId = user.customRoleId.toString();
+          return next();
+        }
       }
 
       return res.status(403).json({ error: 'Forbidden - insufficient permissions' });
@@ -124,5 +177,7 @@ export default {
   authenticateToken,
   authenticate,
   authorizeRole,
+  authorizeRoleOrPermission,
   verifyOrgOwnership,
+  requireSuperadmin,
 };

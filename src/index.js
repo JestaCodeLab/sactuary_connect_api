@@ -32,12 +32,15 @@ import expenseRoutes from './routes/expenseRoutes.js';
 import financeRoutes from './routes/financeRoutes.js';
 import publicGivingRoutes from './routes/publicGivingRoutes.js';
 import userBranchRoutes from './routes/userBranchRoutes.js';
+import userDepartmentRoutes from './routes/userDepartmentRoutes.js';
+import roleRoutes from './routes/roleRoutes.js';
 import smsRoutes from './routes/smsRoutes.js';
 import settingsRoutes from './routes/settingsRoutes.js';
 import shepherdAlertRoutes from './routes/shepherdAlertRoutes.js';
 import notificationRoutes from './routes/notificationRoutes.js';
 import superadminRoutes from './routes/superadminRoutes.js';
 import invitationRoutes from './routes/invitationRoutes.js';
+import supportRoutes from './routes/supportRoutes.js';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -46,7 +49,7 @@ const PORT = process.env.PORT || 5000;
 app.use(helmet());
 app.use(cors({
   origin: [
-    'http://localhost:3000',
+    'http://localhost:3001',
     'https://app.sanctuaryconnect.org',
     process.env.CLIENT_URL,
   ].filter(Boolean),
@@ -70,12 +73,15 @@ app.use('/api/expenses', expenseRoutes);
 app.use('/api/finance', financeRoutes);
 app.use('/api/public/giving', publicGivingRoutes);
 app.use('/api', userBranchRoutes);
+app.use('/api', userDepartmentRoutes);
+app.use('/api/roles', roleRoutes);
 app.use('/api/sms', smsRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/shepherd-alerts', shepherdAlertRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/superadmin', superadminRoutes);
 app.use('/api/invitations', invitationRoutes);
+app.use('/api/support', supportRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {

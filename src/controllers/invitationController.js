@@ -2,17 +2,39 @@ import crypto from 'crypto';
 import Invitation from '../models/Invitation.js';
 import User from '../models/User.js';
 import Organization from '../models/Organization.js';
+import Role from '../models/Role.js';
+import UserBranch from '../models/UserBranch.js';
+import UserDepartment from '../models/UserDepartment.js';
 import { generateToken } from '../config/jwt.js';
 import { sendInviteEmail } from '../utils/email.js';
 import bcrypt from 'bcryptjs';
 
+// 'staff'/'member' retired as invitable roles - custom roles now cover that
+// need. Existing users who already hold those roles are unaffected; this
+// only gates brand-new invitations.
+const VALID_INVITE_ROLES = ['admin', 'pastor', 'custom'];
+
 export const sendInvite = async (req, res) => {
-  const { email } = req.body;
+  const { email, role = 'admin', customRoleId, branchIds, departmentIds } = req.body;
   const organizationId = req.user.organizationId;
   const invitedBy = req.user.userId || req.user.id;
 
   if (!email) {
     return res.status(400).json({ error: 'Email is required' });
+  }
+
+  if (!VALID_INVITE_ROLES.includes(role)) {
+    return res.status(400).json({ error: `role must be one of: ${VALID_INVITE_ROLES.join(', ')}` });
+  }
+
+  if (role === 'custom') {
+    if (!customRoleId) {
+      return res.status(400).json({ error: 'customRoleId is required when role is "custom"' });
+    }
+    const customRole = await Role.findOne({ _id: customRoleId, organizationId, isActive: true });
+    if (!customRole) {
+      return res.status(400).json({ error: 'Invalid or inactive custom role' });
+    }
   }
 
   const normalizedEmail = email.toLowerCase().trim();
@@ -40,7 +62,10 @@ export const sendInvite = async (req, res) => {
   const invitation = await Invitation.create({
     email: normalizedEmail,
     organizationId,
-    role: 'admin',
+    role,
+    customRoleId: role === 'custom' ? customRoleId : null,
+    branchIds: Array.isArray(branchIds) ? branchIds : [],
+    departmentIds: Array.isArray(departmentIds) ? departmentIds : [],
     token,
     status: 'pending',
     expiresAt,
@@ -156,10 +181,31 @@ export const acceptInvite = async (req, res) => {
     firstName: firstName.trim(),
     lastName: lastName.trim(),
     role: invitation.role,
+    customRoleId: invitation.customRoleId || null,
     organizationId: invitation.organizationId,
     verified: true,
     status: 'active',
   });
+
+  if (invitation.branchIds?.length > 0) {
+    await UserBranch.insertMany(
+      invitation.branchIds.map(branchId => ({
+        userId: user._id,
+        branchId,
+        organizationId: invitation.organizationId,
+      }))
+    );
+  }
+
+  if (invitation.departmentIds?.length > 0) {
+    await UserDepartment.insertMany(
+      invitation.departmentIds.map(departmentId => ({
+        userId: user._id,
+        departmentId,
+        organizationId: invitation.organizationId,
+      }))
+    );
+  }
 
   invitation.status = 'accepted';
   await invitation.save();
@@ -178,6 +224,7 @@ export const acceptInvite = async (req, res) => {
       firstName: user.firstName,
       lastName: user.lastName,
       role: user.role,
+      customRoleId: user.customRoleId || null,
       organizationId: user.organizationId,
     },
     token: jwtToken,
