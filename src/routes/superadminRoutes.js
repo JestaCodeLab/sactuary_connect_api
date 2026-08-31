@@ -43,6 +43,10 @@ import {
   revokeFinanceAccount,
   setFinanceAccountPaystackKeys,
   getOrgFinanceAccount,
+  listSupportTickets,
+  getSupportTicket,
+  replyToSupportTicket,
+  updateSupportTicketStatus,
 } from '../controllers/superadminController.js';
 
 const router = Router();
@@ -113,5 +117,11 @@ router.post('/finance-accounts/:id/approve', approveFinanceAccount);
 router.post('/finance-accounts/:id/reject', rejectFinanceAccount);
 router.post('/finance-accounts/:id/revoke', revokeFinanceAccount);
 router.post('/finance-accounts/:id/paystack-keys', setFinanceAccountPaystackKeys);
+
+// ===== SUPPORT =====
+router.get('/support', listSupportTickets);
+router.get('/support/:id', getSupportTicket);
+router.post('/support/:id/replies', replyToSupportTicket);
+router.patch('/support/:id/status', updateSupportTicketStatus);
 
 export default router;

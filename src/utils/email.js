@@ -238,3 +238,46 @@ export const sendWelcomeEmail = async (email, churchName) => {
     return false;
   }
 };
+
+/**
+ * Notify superadmins by email that a new support ticket / feature request
+ * was submitted. `superadminEmails` is a list - sent as one call to all of
+ * them, not one email each, since they're all internal recipients.
+ */
+export const sendSupportTicketEmail = async (superadminEmails, churchName, submitterName, type, subject, description) => {
+  try {
+    if (superadminEmails.length === 0) return true;
+
+    if (!hasEmailConfig) {
+      console.warn('⚠️  EMAIL not configured. Support ticket notification not sent:', subject);
+      return true;
+    }
+
+    const { subject: emailSubject, html, text } = emailTemplates.supportTicketSubmitted(
+      churchName,
+      submitterName,
+      type,
+      subject,
+      description
+    );
+
+    const result = await sendEmailWithRetry({
+      from: EMAIL_FROM,
+      to: superadminEmails,
+      subject: emailSubject,
+      html,
+      text,
+    }, 2);
+
+    if (!result.success) {
+      console.error('❌ Error sending support ticket email:', result.error?.message);
+      return false;
+    }
+
+    console.log('✓ Support ticket email sent to superadmins:', superadminEmails.join(', '));
+    return true;
+  } catch (error) {
+    console.error('❌ Unexpected error in sendSupportTicketEmail:', error.message);
+    return false;
+  }
+};

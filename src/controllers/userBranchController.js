@@ -111,9 +111,8 @@ export const updateUserRole = async (req, res) => {
     const { orgId, userId } = req.params;
     const { role, customRoleId, branchIds, departmentIds } = req.body;
 
-    const VALID_ROLES = ['admin', 'pastor', 'staff', 'member', 'custom'];
-    if (!role || !VALID_ROLES.includes(role)) {
-      return res.status(400).json({ error: `role must be one of: ${VALID_ROLES.join(', ')}` });
+    if (!role) {
+      return res.status(400).json({ error: 'role is required' });
     }
 
     if (userId === req.user.userId) {
@@ -131,6 +130,17 @@ export const updateUserRole = async (req, res) => {
     const user = await User.findOne({ _id: userId, organizationId: orgId });
     if (!user) {
       return res.status(404).json({ error: 'User not found in this organization' });
+    }
+
+    // 'staff'/'member' are retired as assignable roles now that custom roles
+    // cover that need - no longer offered by the client, and rejected here
+    // for any *new* assignment. Still allowed as a no-op (role unchanged) so
+    // editing a pre-existing staff/member user's branches/departments doesn't
+    // break just because their legacy role can no longer be freshly picked.
+    const VALID_ROLES = ['admin', 'pastor', 'custom'];
+    const isUnchangedLegacyRole = ['staff', 'member'].includes(role) && user.role === role;
+    if (!VALID_ROLES.includes(role) && !isUnchangedLegacyRole) {
+      return res.status(400).json({ error: `role must be one of: ${VALID_ROLES.join(', ')}` });
     }
 
     if (role === 'custom') {

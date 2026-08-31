@@ -9,7 +9,10 @@ import { generateToken } from '../config/jwt.js';
 import { sendInviteEmail } from '../utils/email.js';
 import bcrypt from 'bcryptjs';
 
-const VALID_INVITE_ROLES = ['admin', 'pastor', 'staff', 'member', 'custom'];
+// 'staff'/'member' retired as invitable roles - custom roles now cover that
+// need. Existing users who already hold those roles are unaffected; this
+// only gates brand-new invitations.
+const VALID_INVITE_ROLES = ['admin', 'pastor', 'custom'];
 
 export const sendInvite = async (req, res) => {
   const { email, role = 'admin', customRoleId, branchIds, departmentIds } = req.body;
@@ -221,6 +224,7 @@ export const acceptInvite = async (req, res) => {
       firstName: user.firstName,
       lastName: user.lastName,
       role: user.role,
+      customRoleId: user.customRoleId || null,
       organizationId: user.organizationId,
     },
     token: jwtToken,

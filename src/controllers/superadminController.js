@@ -13,6 +13,7 @@ import Department from '../models/Department.js';
 import Event from '../models/Event.js';
 import AuditLog from '../models/AuditLog.js';
 import FinanceAccount from '../models/FinanceAccount.js';
+import SupportTicket from '../models/SupportTicket.js';
 import notificationService from '../services/notificationService.js';
 import { verifyPaystackKey } from '../services/paystackService.js';
 import { encrypt } from '../utils/encryption.js';
@@ -1445,4 +1446,130 @@ export const createSuperadmin = async (req, res) => {
     message: 'Superadmin created',
     user: { id: user._id, email: user.email, firstName: user.firstName, lastName: user.lastName },
   });
+};
+
+// ─── Support ──────────────────────────────────────────────────────────────
+// Every org's tickets land in one shared inbox here - unlike everything else
+// in this controller, these routes aren't org-scoped by design.
+
+export const listSupportTickets = async (req, res) => {
+  try {
+    const { status, type, organizationId } = req.query;
+    const filter = {};
+    if (status) filter.status = status;
+    if (type) filter.type = type;
+    if (organizationId) filter.organizationId = organizationId;
+
+    const tickets = await SupportTicket.find(filter)
+      .populate('organizationId', 'churchName')
+      .populate('createdBy', 'firstName lastName email')
+      .sort({ updatedAt: -1 });
+
+    res.json({ tickets });
+  } catch (error) {
+    console.error('Error fetching support tickets:', error);
+    res.status(500).json({ error: 'Failed to fetch tickets' });
+  }
+};
+
+export const getSupportTicket = async (req, res) => {
+  try {
+    const ticket = await SupportTicket.findById(req.params.id)
+      .populate('organizationId', 'churchName')
+      .populate('createdBy', 'firstName lastName email');
+    if (!ticket) {
+      return res.status(404).json({ error: 'Ticket not found' });
+    }
+    res.json({ ticket });
+  } catch (error) {
+    console.error('Error fetching support ticket:', error);
+    res.status(500).json({ error: 'Failed to fetch ticket' });
+  }
+};
+
+export const replyToSupportTicket = async (req, res) => {
+  try {
+    const { message } = req.body;
+    if (!message?.trim()) {
+      return res.status(400).json({ error: 'Message is required' });
+    }
+
+    const ticket = await SupportTicket.findById(req.params.id);
+    if (!ticket) {
+      return res.status(404).json({ error: 'Ticket not found' });
+    }
+    if (ticket.status === 'closed') {
+      return res.status(400).json({ error: 'This ticket is closed' });
+    }
+
+    const author = await User.findById(req.user.userId).select('firstName lastName');
+    ticket.replies.push({
+      authorId: req.user.userId,
+      authorName: author ? `${author.firstName} ${author.lastName}` : 'Support Team',
+      authorRole: 'superadmin',
+      message: message.trim(),
+    });
+
+    // A reply from the platform is implicitly "we're on it" - move a
+    // still-open ticket into in_progress rather than leaving it looking
+    // untouched in the same "open" bucket it started in.
+    if (ticket.status === 'open') {
+      ticket.status = 'in_progress';
+    }
+
+    await ticket.save();
+
+    // In-app only (no email) - the org admin sees it next time they check
+    // notifications; email is reserved for the initial submission alert.
+    const org = await Organization.findById(ticket.organizationId).select('adminId');
+    if (org?.adminId) {
+      notificationService.createNotification(
+        org.adminId,
+        ticket.organizationId,
+        'support_ticket_reply',
+        `Support team replied: ${ticket.subject}`,
+        `The support team replied to your ticket "${ticket.subject}"`,
+        {
+          relatedModel: 'SupportTicket',
+          relatedModelId: ticket._id,
+          actionUrl: `/dashboard/support/${ticket._id}`,
+        }
+      ).catch((err) => console.error('Error sending support reply notification:', err));
+    }
+
+    res.json({ message: 'Reply sent', ticket });
+  } catch (error) {
+    console.error('Error replying to support ticket:', error);
+    res.status(500).json({ error: 'Failed to send reply' });
+  }
+};
+
+const SUPPORT_STATUSES = ['open', 'in_progress', 'resolved', 'closed'];
+
+export const updateSupportTicketStatus = async (req, res) => {
+  try {
+    const { status } = req.body;
+    if (!SUPPORT_STATUSES.includes(status)) {
+      return res.status(400).json({ error: `status must be one of: ${SUPPORT_STATUSES.join(', ')}` });
+    }
+
+    const ticket = await SupportTicket.findById(req.params.id);
+    if (!ticket) {
+      return res.status(404).json({ error: 'Ticket not found' });
+    }
+
+    const previousStatus = ticket.status;
+    ticket.status = status;
+    await ticket.save();
+
+    await log(req.user.userId, 'update_support_ticket_status', {
+      targetOrgId: ticket.organizationId,
+      details: { ticketId: ticket._id.toString(), from: previousStatus, to: status },
+    });
+
+    res.json({ message: 'Ticket status updated', ticket });
+  } catch (error) {
+    console.error('Error updating support ticket status:', error);
+    res.status(500).json({ error: 'Failed to update ticket status' });
+  }
 };

@@ -26,12 +26,23 @@ export const getRoles = async (req, res) => {
 };
 
 /**
- * Get a single custom role
+ * Get a single custom role. Admin-only for any role, PLUS a 'custom' user
+ * fetching their own assigned role - the client's usePermissions hook needs
+ * this self-lookup to resolve which permissions it was actually granted.
  * GET /api/roles/:id
  */
 export const getRoleById = async (req, res) => {
   try {
     const organizationId = req.user.organizationId;
+
+    if (req.user.role !== 'admin') {
+      const requester = await User.findById(req.user.userId).select('role customRoleId');
+      const isOwnRole = requester?.role === 'custom' && requester.customRoleId?.toString() === req.params.id;
+      if (!isOwnRole) {
+        return res.status(403).json({ error: 'Forbidden - insufficient permissions' });
+      }
+    }
+
     const role = await Role.findOne({ _id: req.params.id, organizationId });
     if (!role) {
       return res.status(404).json({ error: 'Role not found' });

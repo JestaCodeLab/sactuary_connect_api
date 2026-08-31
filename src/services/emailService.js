@@ -269,4 +269,43 @@ export const emailTemplates = {
     `,
     text: `Welcome, ${churchName}!\n\nThank you for choosing Sanctuary Connect.\n\nKey Features:\n- Manage Members: Build your member directory\n- Plan Events: Schedule services and activities\n- Track Donations: Secure financial tracking\n- Get Insights: View analytics and reports\n\nFor support, contact support@sanctuaryconnect.com\n\n© 2024 Sanctuary Connect`,
   }),
+
+  supportTicketSubmitted: (churchName, submitterName, type, subject, description) => {
+    const typeLabel = type === 'feature_request' ? 'Feature Request' : 'Support Ticket';
+    return {
+      subject: `New ${typeLabel}: ${subject}`,
+      html: `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <style>
+              body { font-family: Arial, sans-serif; }
+              .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+              .header { background: linear-gradient(135deg, #3B82F6 0%, #1E40AF 100%); color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
+              .content { background: #f9fafb; padding: 30px; border-radius: 0 0 8px 8px; }
+              .meta { color: #6B7280; font-size: 14px; margin: 0 0 20px 0; }
+              .box { background: white; border: 1px solid #E5E7EB; border-radius: 8px; padding: 20px; white-space: pre-wrap; }
+              .footer { text-align: center; color: #9CA3AF; font-size: 12px; margin-top: 30px; }
+            </style>
+          </head>
+          <body>
+            <div class="container">
+              <div class="header">
+                <h1 style="margin: 0;">📩 New ${typeLabel}</h1>
+              </div>
+              <div class="content">
+                <p class="meta"><strong>${churchName}</strong> · submitted by ${submitterName}</p>
+                <h2 style="color: #1F2937; margin: 0 0 10px 0;">${subject}</h2>
+                <div class="box">${description}</div>
+              </div>
+              <div class="footer">
+                <p>© 2024 Sanctuary Connect. Review this in the superadmin dashboard.</p>
+              </div>
+            </div>
+          </body>
+        </html>
+      `,
+      text: `New ${typeLabel} from ${churchName} (submitted by ${submitterName})\n\n${subject}\n\n${description}\n\nReview it in the superadmin dashboard.`,
+    };
+  },
 };

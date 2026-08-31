@@ -40,6 +40,7 @@ import shepherdAlertRoutes from './routes/shepherdAlertRoutes.js';
 import notificationRoutes from './routes/notificationRoutes.js';
 import superadminRoutes from './routes/superadminRoutes.js';
 import invitationRoutes from './routes/invitationRoutes.js';
+import supportRoutes from './routes/supportRoutes.js';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -48,7 +49,7 @@ const PORT = process.env.PORT || 5000;
 app.use(helmet());
 app.use(cors({
   origin: [
-    'http://localhost:3000',
+    'http://localhost:3001',
     'https://app.sanctuaryconnect.org',
     process.env.CLIENT_URL,
   ].filter(Boolean),
@@ -80,6 +81,7 @@ app.use('/api/shepherd-alerts', shepherdAlertRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/superadmin', superadminRoutes);
 app.use('/api/invitations', invitationRoutes);
+app.use('/api/support', supportRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
