@@ -1,3 +1,5 @@
+const SUPPORT_CONTACT_EMAIL = process.env.SUPPORT_CONTACT_EMAIL || 'support@sanctuaryconnect.com';
+
 export const emailTemplates = {
   verification: (name, code) => ({
     subject: 'Verify Your Sanctuary Connect Account',
@@ -258,7 +260,7 @@ export const emailTemplates = {
                 <p>View analytics and reports on your church's growth, engagement, and finances.</p>
               </div>
               
-              <p style="margin-top: 30px; color: #6B7280; font-size: 14px;">Need help? Visit our <strong>Help Center</strong> or contact our support team at <strong>support@sanctuaryconnect.com</strong></p>
+              <p style="margin-top: 30px; color: #6B7280; font-size: 14px;">Need help? Visit our <strong>Help Center</strong> or contact our support team at <strong>${SUPPORT_CONTACT_EMAIL}</strong></p>
             </div>
             <div class="footer">
               <p>© 2024 Sanctuary Connect. All rights reserved.</p>
@@ -267,7 +269,7 @@ export const emailTemplates = {
         </body>
       </html>
     `,
-    text: `Welcome, ${churchName}!\n\nThank you for choosing Sanctuary Connect.\n\nKey Features:\n- Manage Members: Build your member directory\n- Plan Events: Schedule services and activities\n- Track Donations: Secure financial tracking\n- Get Insights: View analytics and reports\n\nFor support, contact support@sanctuaryconnect.com\n\n© 2024 Sanctuary Connect`,
+    text: `Welcome, ${churchName}!\n\nThank you for choosing Sanctuary Connect.\n\nKey Features:\n- Manage Members: Build your member directory\n- Plan Events: Schedule services and activities\n- Track Donations: Secure financial tracking\n- Get Insights: View analytics and reports\n\nFor support, contact ${SUPPORT_CONTACT_EMAIL}\n\n© 2024 Sanctuary Connect`,
   }),
 
   supportTicketSubmitted: (churchName, submitterName, type, subject, description) => {

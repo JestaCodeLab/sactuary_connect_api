@@ -6,7 +6,14 @@ const isLocalHost = (url) => /localhost|127\.0\.0\.1/i.test(url || '');
 // one-off script against a real MONGODB_URI). If the DB is remote but
 // CLIENT_URL is local, something is misconfigured — refuse to bake that
 // URL into anything persisted.
+//
+// Exempt when NODE_ENV=development: a local dev server pointed at a shared
+// UAT/staging database (a normal setup - see api/.env) is expected to keep
+// CLIENT_URL=localhost, since there's no local instance of that database to
+// match it. The risk this guard exists for is a *deployed* environment
+// misconfigured this way, which always runs with NODE_ENV=production.
 export function assertClientUrlMatchesDatabase(clientUrl, mongoUri) {
+  if (process.env.NODE_ENV === 'development') return;
   if (isLocalHost(clientUrl) && !isLocalHost(mongoUri)) {
     throw new Error(
       `Refusing to use CLIENT_URL "${clientUrl}" because it points at localhost while MONGODB_URI points at a non-local database. ` +

@@ -10,7 +10,7 @@ import Member from '../models/Member.js';
 import User from '../models/User.js';
 import ServiceCode from '../models/ServiceCode.js';
 import { branchFilter, resolveCreateBranch } from '../utils/branchQuery.js';
-import { getNextOccurrence, getCurrentOccurrence } from '../utils/occurrenceHelper.js';
+import { getNextOccurrence, getCurrentOccurrence, getEffectiveEventStatus, getRelevantOccurrenceDate } from '../utils/occurrenceHelper.js';
 import { normalizePhone, findMemberByPhone } from '../utils/phoneUtils.js';
 import { serviceCodeService } from '../services/serviceCodeService.js';
 
@@ -22,32 +22,64 @@ const EXPORTS_DIR = path.join(__dirname, '../../exports');
 // date range / status / title search - the events themselves are the source of
 // truth (so an event with zero check-ins still shows up as 0, not omitted), with
 // AttendanceRecord counts merged in per event.
+//
+// Status/date here are computed live per-event via getEffectiveEventStatus/
+// getRelevantOccurrenceDate rather than queried straight off the stored
+// `status`/`startDate` fields. A recurring event's stored status never
+// becomes "ongoing" (see occurrenceHelper.js), and its stored startDate is
+// just the anchor for the *first* occurrence - filtering/sorting against
+// those raw fields would make an actively-running weekly service invisible
+// under a "Live"/"Ongoing" or "today" filter. So status/date filters are
+// applied here in application code, after computing each event's real
+// current-or-next occurrence, instead of as a Mongo query filter.
 export const getAllAttendance = async (req, res) => {
   try {
     const { startDate, endDate, status, search } = req.query;
     const filter = branchFilter(req);
 
-    if (startDate) {
-      filter.startDate = { ...filter.startDate, $gte: new Date(startDate) };
-    }
-    if (endDate) {
-      const endDateTime = new Date(endDate);
-      endDateTime.setHours(23, 59, 59, 999);
-      filter.startDate = { ...filter.startDate, $lte: endDateTime };
-    }
-    if (status && ['scheduled', 'ongoing', 'completed', 'cancelled'].includes(status)) {
-      filter.status = status;
-    }
     if (search && search.trim()) {
       filter.title = { $regex: search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
     }
 
-    const events = await Event.find(filter)
-      .select('title startDate endDate eventType status isRecurring')
-      .sort({ startDate: -1 })
-      .limit(100);
+    const now = new Date();
+    const rangeStart = startDate ? new Date(startDate) : null;
+    let rangeEnd = null;
+    if (endDate) {
+      rangeEnd = new Date(endDate);
+      rangeEnd.setHours(23, 59, 59, 999);
+    }
 
-    const eventIds = events.map((e) => e._id);
+    // Recurring series are fetched unbounded (there are typically only a
+    // handful per org) rather than capped/sorted by anchor startDate - a
+    // long-running weekly service can have an anchor date from years ago,
+    // which would otherwise let enough newer one-time events push it out of
+    // a shared limit even though its current occurrence is happening today.
+    const selectFields = 'title startDate endDate eventType status isRecurring recurrencePattern recurrenceDay recurrenceEndDate';
+    const [recurringEvents, oneTimeEvents] = await Promise.all([
+      Event.find({ ...filter, isRecurring: true }).select(selectFields),
+      Event.find({ ...filter, isRecurring: { $ne: true } }).select(selectFields).sort({ startDate: -1 }).limit(500),
+    ]);
+    const events = [...recurringEvents, ...oneTimeEvents];
+
+    const withComputed = events.map((event) => ({
+      event,
+      effectiveStatus: getEffectiveEventStatus(event, now),
+      relevantDate: getRelevantOccurrenceDate(event, now),
+    }));
+
+    const filtered = withComputed.filter(({ effectiveStatus, relevantDate }) => {
+      if (status && ['scheduled', 'ongoing', 'completed', 'cancelled'].includes(status) && effectiveStatus !== status) {
+        return false;
+      }
+      if (rangeStart && relevantDate < rangeStart) return false;
+      if (rangeEnd && relevantDate > rangeEnd) return false;
+      return true;
+    });
+
+    filtered.sort((a, b) => b.relevantDate.getTime() - a.relevantDate.getTime());
+    const page = filtered.slice(0, 100);
+
+    const eventIds = page.map(({ event }) => event._id);
 
     const attendanceCounts = await AttendanceRecord.aggregate([
       { $match: { eventId: { $in: eventIds } } },
@@ -63,15 +95,15 @@ export const getAllAttendance = async (req, res) => {
     ]);
     const countsByEvent = new Map(attendanceCounts.map((c) => [String(c._id), c]));
 
-    const results = events.map((event) => {
+    const results = page.map(({ event, effectiveStatus, relevantDate }) => {
       const counts = countsByEvent.get(String(event._id));
       return {
         eventId: event._id,
         eventTitle: event.title,
-        eventDate: event.startDate,
+        eventDate: relevantDate,
         eventEndDate: event.endDate,
         eventType: event.eventType,
-        eventStatus: event.status,
+        eventStatus: effectiveStatus,
         isRecurring: event.isRecurring,
         totalCheckIns: counts?.totalCheckIns || 0,
         members: counts?.members || 0,
