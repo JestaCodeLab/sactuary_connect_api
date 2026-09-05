@@ -41,6 +41,14 @@ async function buildQrCode(event) {
 export const getAllEvents = async (req, res) => {
   try {
     const now = new Date();
+    // recurrenceEndDate is a date-only field, stored as that day's midnight
+    // UTC instant - comparing it against `now` directly would mark the
+    // series completed as soon as its end date's midnight passes, hours
+    // before that day's actual occurrence happens. Comparing against
+    // *today's* midnight instead correctly waits for the whole end date to
+    // pass. Mirrors occurrenceHelper.js's seriesEndBoundary.
+    const startOfToday = new Date(now);
+    startOfToday.setUTCHours(0, 0, 0, 0);
     const filter = branchFilter(req);
 
     // Date range filters from query params
@@ -85,7 +93,7 @@ export const getAllEvents = async (req, res) => {
 
     // Auto-transition: recurring events whose recurrenceEndDate has passed → completed
     await Event.updateMany(
-      { ...branchFilter(req), isRecurring: true, status: 'scheduled', recurrenceEndDate: { $lt: now, $exists: true } },
+      { ...branchFilter(req), isRecurring: true, status: 'scheduled', recurrenceEndDate: { $lt: startOfToday, $exists: true } },
       { $set: { status: 'completed', updatedAt: now } }
     );
 
@@ -103,6 +111,11 @@ export const getEventById = async (req, res) => {
   try {
     const { id } = req.params;
     const now = new Date();
+    // See getAllEvents above - recurrenceEndDate is midnight UTC of its day,
+    // so compare against today's midnight rather than `now` to avoid ending
+    // the series before that day's own occurrence has happened.
+    const startOfToday = new Date(now);
+    startOfToday.setUTCHours(0, 0, 0, 0);
 
     const event = await Event.findOne({ _id: id, organizationId: req.organizationId })
       .populate('organizerId', 'firstName lastName email');
@@ -116,7 +129,7 @@ export const getEventById = async (req, res) => {
 
     if (event.isRecurring) {
       // Recurring events are completed only when the series ends
-      if (event.status === 'scheduled' && event.recurrenceEndDate && event.recurrenceEndDate < now) {
+      if (event.status === 'scheduled' && event.recurrenceEndDate && event.recurrenceEndDate < startOfToday) {
         event.status = 'completed';
         event.updatedAt = now;
         statusChanged = true;
