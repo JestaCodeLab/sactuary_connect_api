@@ -414,6 +414,11 @@ export const getUpcomingOccurrences = async (req, res) => {
   try {
     const { id } = req.params;
     const rangeDays = parseInt(req.query.range) || 30;
+    // Attendance review needs to look backward too (past occurrences are
+    // where the actual check-in data lives), whereas panels like "Upcoming
+    // Occurrences" and the QR display are intentionally forward-only - so
+    // this is opt-in rather than a change to the default range.
+    const includePast = req.query.includePast === 'true';
 
     const event = await Event.findOne({ _id: id, organizationId: req.organizationId });
     if (!event) {
@@ -427,8 +432,9 @@ export const getUpcomingOccurrences = async (req, res) => {
     const now = new Date();
     const rangeEnd = new Date(now);
     rangeEnd.setDate(rangeEnd.getDate() + rangeDays);
+    const rangeStart = includePast ? new Date(event.startDate) : now;
 
-    const occurrences = computeOccurrences(event, now, rangeEnd);
+    const occurrences = computeOccurrences(event, rangeStart, rangeEnd);
 
     // Attach attendance count for each occurrence
     const result = await Promise.all(

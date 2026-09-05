@@ -10,7 +10,7 @@ import Member from '../models/Member.js';
 import User from '../models/User.js';
 import ServiceCode from '../models/ServiceCode.js';
 import { branchFilter, resolveCreateBranch } from '../utils/branchQuery.js';
-import { getNextOccurrence, getCurrentOccurrence } from '../utils/occurrenceHelper.js';
+import { getNextOccurrence, getCurrentOccurrence, getOccurrenceForCheckIn, findOccurrenceByDate, computeOccurrences } from '../utils/occurrenceHelper.js';
 import { normalizePhone, findMemberByPhone } from '../utils/phoneUtils.js';
 import { serviceCodeService } from '../services/serviceCodeService.js';
 
@@ -27,14 +27,14 @@ export const getAllAttendance = async (req, res) => {
     const { startDate, endDate, status, search } = req.query;
     const filter = branchFilter(req);
 
-    if (startDate) {
-      filter.startDate = { ...filter.startDate, $gte: new Date(startDate) };
-    }
+    const rangeStart = startDate ? new Date(startDate) : null;
+    let rangeEnd = null;
     if (endDate) {
-      const endDateTime = new Date(endDate);
-      endDateTime.setHours(23, 59, 59, 999);
-      filter.startDate = { ...filter.startDate, $lte: endDateTime };
+      rangeEnd = new Date(endDate);
+      rangeEnd.setHours(23, 59, 59, 999);
     }
+    const hasDateFilter = !!(rangeStart || rangeEnd);
+
     if (status && ['scheduled', 'ongoing', 'completed', 'cancelled'].includes(status)) {
       filter.status = status;
     }
@@ -42,15 +42,57 @@ export const getAllAttendance = async (req, res) => {
       filter.title = { $regex: search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
     }
 
-    const events = await Event.find(filter)
-      .select('title startDate endDate eventType status isRecurring')
+    // A recurring event's own startDate is only its *first* occurrence, so it
+    // can't be date-filtered in the query the way a one-off event can - a
+    // weekly service that started months ago would never match a "this week"
+    // filter even though it met this week. Recurring events are therefore
+    // matched in JS below, against their actual computed occurrences.
+    const dateFilter = {};
+    if (rangeStart) dateFilter.$gte = rangeStart;
+    if (rangeEnd) dateFilter.$lte = rangeEnd;
+
+    const query = hasDateFilter
+      ? { ...filter, $or: [{ isRecurring: { $ne: true }, startDate: dateFilter }, { isRecurring: true }] }
+      : filter;
+
+    const events = await Event.find(query)
+      .select('title startDate endDate eventType status isRecurring recurrencePattern recurrenceDay recurrenceEndDate')
       .sort({ startDate: -1 })
       .limit(100);
 
-    const eventIds = events.map((e) => e._id);
+    // For each recurring event, work out which of its occurrences fall inside
+    // the requested window (all of them when no date filter is applied).
+    const occurrenceWindow = new Map();
+    const visibleEvents = events.filter((event) => {
+      if (!event.isRecurring) return true;
+
+      const from = rangeStart || new Date(event.startDate);
+      const to = rangeEnd || new Date();
+      const occurrences = computeOccurrences(event, from, to);
+
+      if (hasDateFilter && occurrences.length === 0) return false;
+
+      occurrenceWindow.set(String(event._id), occurrences);
+      return true;
+    });
+
+    const eventIds = visibleEvents.map((e) => e._id);
+
+    // Scope the counts to the same window the filter describes, so the numbers
+    // shown match what was actually filtered for rather than being a lifetime
+    // total across every occurrence the series has ever had.
+    const countMatch = { eventId: { $in: eventIds } };
+    if (hasDateFilter) {
+      const checkInRange = {};
+      if (rangeStart) checkInRange.$gte = rangeStart;
+      if (rangeEnd) checkInRange.$lte = rangeEnd;
+      // occurrenceDate is what a recurring event's records are keyed by;
+      // one-off events have none, so fall back to checkInTime.
+      countMatch.$or = [{ occurrenceDate: checkInRange }, { occurrenceDate: null, checkInTime: checkInRange }];
+    }
 
     const attendanceCounts = await AttendanceRecord.aggregate([
-      { $match: { eventId: { $in: eventIds } } },
+      { $match: countMatch },
       {
         $group: {
           _id: '$eventId',
@@ -63,16 +105,30 @@ export const getAllAttendance = async (req, res) => {
     ]);
     const countsByEvent = new Map(attendanceCounts.map((c) => [String(c._id), c]));
 
-    const results = events.map((event) => {
+    const results = visibleEvents.map((event) => {
       const counts = countsByEvent.get(String(event._id));
+      const occurrences = occurrenceWindow.get(String(event._id));
+
+      // Show the most recent relevant occurrence rather than the series
+      // anchor, otherwise a filtered row displays a date outside the very
+      // range the user filtered by.
+      let eventDate = event.startDate;
+      let eventEndDate = event.endDate;
+      if (event.isRecurring && occurrences?.length) {
+        const latest = occurrences[occurrences.length - 1];
+        eventDate = latest.startDate;
+        eventEndDate = latest.endDate;
+      }
+
       return {
         eventId: event._id,
         eventTitle: event.title,
-        eventDate: event.startDate,
-        eventEndDate: event.endDate,
+        eventDate,
+        eventEndDate,
         eventType: event.eventType,
         eventStatus: event.status,
         isRecurring: event.isRecurring,
+        occurrencesInRange: event.isRecurring ? (occurrences?.length || 0) : undefined,
         totalCheckIns: counts?.totalCheckIns || 0,
         members: counts?.members || 0,
         guests: counts?.guests || 0,
@@ -440,11 +496,35 @@ export const manualCheckIn = async (req, res) => {
     // Resolve occurrence date for recurring events
     let occurrenceDate = null;
     if (event.isRecurring) {
+      const now = new Date();
+
       if (reqOccurrenceDate) {
-        occurrenceDate = new Date(reqOccurrenceDate);
+        // Validate the client-supplied date is actually a scheduled occurrence
+        // of this series, rather than persisting whatever date was posted.
+        const requested = findOccurrenceByDate(event, reqOccurrenceDate);
+        if (!requested) {
+          return res.status(400).json({ error: 'That date is not a scheduled occurrence of this event' });
+        }
+        // An occurrence that hasn't begun can only be checked into when it's
+        // the imminent one (early arrivals before doors open). Selecting, say,
+        // next week's service is rejected - nobody has attended it yet.
+        if (now < requested.startDate) {
+          const imminent = getOccurrenceForCheckIn(event, now);
+          const isImminent = imminent && imminent.startDate.getTime() === requested.startDate.getTime();
+          if (!isImminent) {
+            return res.status(400).json({
+              error: 'Check-in is not yet available. This occurrence has not started yet.',
+              startDate: requested.startDate,
+            });
+          }
+        }
+        occurrenceDate = requested.startDate;
       } else {
-        const occ = getCurrentOccurrence(event) || getNextOccurrence(event);
-        occurrenceDate = occ ? occ.startDate : null;
+        const occ = getOccurrenceForCheckIn(event, now);
+        if (!occ) {
+          return res.status(400).json({ error: 'This event series has not started yet' });
+        }
+        occurrenceDate = occ.startDate;
       }
     }
 

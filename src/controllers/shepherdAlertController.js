@@ -11,6 +11,14 @@ const LOOKBACK_MIN_DAYS = 1;
 const LOOKBACK_MAX_DAYS = 365;
 
 /**
+ * Member statuses that shepherd alerts never monitor.
+ * 'visiting' = guests/visitors, who haven't committed to attending;
+ * 'transferred' = members who have left for another church.
+ * Both would otherwise be flagged as persistently absent forever.
+ */
+const MONITORING_EXEMPT_STATUSES = ['visiting', 'transferred'];
+
+/**
  * Get all shepherd alerts for an organization, scoped to the selected
  * branch (or the user's assigned branches) the same way events/members are.
  */
@@ -376,9 +384,16 @@ async function executeShepherdAlertCheck(alert, organizationId) {
       ],
     };
 
-    // Every distinct service held in the lookback window (org/branch-scoped)
+    // Every distinct service held in the lookback window (org/branch-scoped).
+    // Guest check-ins (no linked member) are excluded so the denominator is
+    // built from member participation only - otherwise a gathering that only
+    // visitors attended would count as a service every member was "absent"
+    // from, manufacturing absences for the whole congregation. This also keeps
+    // the denominator consistent with the member-only numerator below.
+    const memberAttendanceMatch = { ...matchStage, memberId: { $ne: null } };
+
     const occurrenceDocs = await AttendanceRecord.aggregate([
-      { $match: matchStage },
+      { $match: memberAttendanceMatch },
       { $group: { _id: occurrenceKey } },
     ]);
     const totalOccurrences = occurrenceDocs.length;
@@ -392,7 +407,7 @@ async function executeShepherdAlertCheck(alert, organizationId) {
 
     // Per-member count of distinct services they personally attended
     const attendanceDocs = await AttendanceRecord.aggregate([
-      { $match: { ...matchStage, memberId: { $ne: null } } },
+      { $match: memberAttendanceMatch },
       { $group: { _id: { memberId: '$memberId', occurrence: occurrenceKey } } },
       { $group: { _id: '$_id.memberId', attendedCount: { $sum: 1 } } },
     ]);
@@ -400,7 +415,16 @@ async function executeShepherdAlertCheck(alert, organizationId) {
       attendanceDocs.map(doc => [String(doc._id), doc.attendedCount])
     );
 
-    const memberFilter = { organizationId };
+    // Shepherd alerts are pastoral follow-up for the congregation, so only
+    // people who are actually part of it are monitored. Visitors/guests
+    // ('visiting') have made no commitment to attend and shouldn't generate
+    // "they've missed 3 services" alerts, and transferred members have left
+    // the church entirely - alerting on either is noise that buries the
+    // members a shepherd should genuinely be following up on.
+    const memberFilter = {
+      organizationId,
+      memberStatus: { $nin: MONITORING_EXEMPT_STATUSES },
+    };
     if (alert.branchId) memberFilter.branchId = alert.branchId;
     const members = await Member.find(memberFilter).lean();
 
