@@ -13,6 +13,7 @@ import { PLANS, getAnnualPrice, getPlanById, getAllPlans, getPublicPlans } from 
 import { verifyTransaction, initializeTransaction } from '../services/paystackService.js';
 import notificationService from '../services/notificationService.js';
 import { branchFilter } from '../utils/branchQuery.js';
+import { isSubscriptionActive, getRenewalWindowStatus } from '../utils/subscriptionStatus.js';
 
 const TAX_RATE = 0.1; // 10% platform tax
 
@@ -263,7 +264,7 @@ export const createSubscription = async (req, res) => {
           channels: { inApp: true, email: true },
           relatedModel: 'Subscription',
           relatedModelId: subscription._id,
-          actionUrl: '/dashboard/settings/subscription',
+          actionUrl: '/dashboard/settings?tab=subscription',
         }
       );
     } catch (notificationError) {
@@ -396,8 +397,8 @@ export const getSubscription = async (req, res) => {
     res.json({
       subscription,
       plan,
-      isActive: (subscription.status === 'active' || subscription.status === 'trialing')
-        && subscription.currentPeriodEnd >= new Date(),
+      isActive: isSubscriptionActive(subscription),
+      renewalWindow: getRenewalWindowStatus(subscription),
     });
   } catch (error) {
     console.error('❌ [GET SUBSCRIPTION] Error fetching subscription:', error);
@@ -534,7 +535,7 @@ export const updateSubscription = async (req, res) => {
             channels: { inApp: true, email: true },
             relatedModel: 'Subscription',
             relatedModelId: subscription._id,
-            actionUrl: '/dashboard/settings/subscription',
+            actionUrl: '/dashboard/settings?tab=subscription',
           }
         );
       } catch (notificationError) {
@@ -593,7 +594,7 @@ export const cancelSubscription = async (req, res) => {
           channels: { inApp: true, email: true },
           relatedModel: 'Subscription',
           relatedModelId: subscription._id,
-          actionUrl: '/dashboard/settings/subscription',
+          actionUrl: '/dashboard/settings?tab=subscription',
         }
       );
     } catch (notificationError) {
@@ -739,8 +740,7 @@ export const checkFeature = async (req, res) => {
 
     const plan = getPlanById(subscription.planId);
     const feature = plan?.features.find(f => f.key === featureKey);
-    const isActive = (subscription.status === 'active' || subscription.status === 'trialing')
-      && subscription.currentPeriodEnd >= new Date();
+    const isActive = isSubscriptionActive(subscription);
 
     res.json({
       featureKey,

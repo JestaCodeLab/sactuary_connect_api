@@ -45,6 +45,12 @@ const subscriptionSchema = new mongoose.Schema({
   expiryReminderSentAt: Date,
   expiredNotificationSentAt: Date,
 
+  // Set when the grace-period job auto-downgrades this subscription to the
+  // free plan after a lapsed renewal. Compared against currentPeriodStart
+  // like the reminder timestamps above, so a later renewal (which resets
+  // currentPeriodStart) allows the job to downgrade again on a future lapse.
+  autoDowngradedAt: Date,
+
   // Payment info
   paymentMethod: {
     type: String,

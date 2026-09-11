@@ -2,6 +2,7 @@ import Organization from '../models/Organization.js';
 import Subscription from '../models/Subscription.js';
 import FinanceAccount from '../models/FinanceAccount.js';
 import { PLANS } from '../config/plans.js';
+import { isSubscriptionActive } from '../utils/subscriptionStatus.js';
 
 /**
  * Returns the minimum plan that includes a given feature key.
@@ -42,10 +43,7 @@ export const requireFeature = (featureKey) => {
         return res.status(403).json({ error: 'No subscription found for this organization', code: 'NO_SUB' });
       }
 
-      const isActive = (subscription.status === 'active' || subscription.status === 'trialing')
-        && subscription.currentPeriodEnd >= new Date();
-
-      if (!isActive) {
+      if (!isSubscriptionActive(subscription)) {
         return res.status(403).json({
           error: 'Your subscription is inactive or has expired. Please renew to continue.',
           code: 'SUBSCRIPTION_INACTIVE',

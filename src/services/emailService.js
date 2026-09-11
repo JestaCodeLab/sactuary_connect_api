@@ -172,7 +172,7 @@ export const emailTemplates = {
     text: `Hi ${name},\n\n${churchName}'s ${planName} subscription expires on ${expiryDate} (in ${daysLeft} day${daysLeft === 1 ? '' : 's'}).\n\nRenew now: ${renewLink}\n\nIf your subscription lapses, ${churchName} will lose access to features not included on the free plan until it's renewed.\n\n© 2024 Sanctuary Connect`,
   }),
 
-  subscriptionExpired: (name, churchName, planName, renewLink) => ({
+  subscriptionExpired: (name, churchName, planName, renewLink, graceDays) => ({
     subject: `Your ${planName} subscription has expired`,
     html: `
       <!DOCTYPE html>
@@ -195,11 +195,11 @@ export const emailTemplates = {
             </div>
             <div class="content">
               <p>Hi ${name},</p>
-              <p><strong>${churchName}</strong>'s <strong>${planName}</strong> subscription has expired. Features not included on the free plan are no longer available until you renew.</p>
+              <p><strong>${churchName}</strong>'s <strong>${planName}</strong> subscription has expired. You have a ${graceDays}-day grace period with full access - renew before then to avoid being switched to the free plan.</p>
               <div style="text-align: center;">
                 <a href="${renewLink}" class="cta-button">Renew Now</a>
               </div>
-              <p style="color: #6B7280; font-size: 14px;">Your data is safe - renewing restores full access immediately.</p>
+              <p style="color: #6B7280; font-size: 14px;">Your data is safe - renewing restores your billing period immediately.</p>
             </div>
             <div class="footer">
               <p>© 2024 Sanctuary Connect. All rights reserved.</p>
@@ -209,7 +209,47 @@ export const emailTemplates = {
         </body>
       </html>
     `,
-    text: `Hi ${name},\n\n${churchName}'s ${planName} subscription has expired. Features not included on the free plan are no longer available until you renew.\n\nRenew now: ${renewLink}\n\nYour data is safe - renewing restores full access immediately.\n\n© 2024 Sanctuary Connect`,
+    text: `Hi ${name},\n\n${churchName}'s ${planName} subscription has expired. You have a ${graceDays}-day grace period with full access - renew before then to avoid being switched to the free plan.\n\nRenew now: ${renewLink}\n\nYour data is safe - renewing restores your billing period immediately.\n\n© 2024 Sanctuary Connect`,
+  }),
+
+  subscriptionAutoDowngraded: (name, churchName, planName, renewLink) => ({
+    subject: `${churchName} has been switched to the Seed (free) plan`,
+    html: `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <style>
+            body { font-family: Arial, sans-serif; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #DC2626 0%, #991B1B 100%); color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
+            .content { background: #f9fafb; padding: 30px; border-radius: 0 0 8px 8px; }
+            .cta-button { background: #3B82F6; color: white; padding: 15px 30px; text-decoration: none; border-radius: 6px; display: inline-block; margin: 30px 0; font-weight: bold; }
+            .footer { text-align: center; color: #9CA3AF; font-size: 12px; margin-top: 30px; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h1 style="margin: 0;">Subscription Switched to Seed (Free)</h1>
+              <p style="margin: 10px 0 0 0;">Sanctuary Connect</p>
+            </div>
+            <div class="content">
+              <p>Hi ${name},</p>
+              <p><strong>${churchName}</strong>'s <strong>${planName}</strong> subscription wasn't renewed within the grace period, so the organization has been switched to the free Seed plan. Features not included on Seed are no longer available.</p>
+              <div style="text-align: center;">
+                <a href="${renewLink}" class="cta-button">Resubscribe</a>
+              </div>
+              <p style="color: #6B7280; font-size: 14px;">Your data is safe - resubscribing restores full access immediately.</p>
+            </div>
+            <div class="footer">
+              <p>© 2024 Sanctuary Connect. All rights reserved.</p>
+              <p>This is an automated message, please do not reply to this email.</p>
+            </div>
+          </div>
+        </body>
+      </html>
+    `,
+    text: `Hi ${name},\n\n${churchName}'s ${planName} subscription wasn't renewed within the grace period, so the organization has been switched to the free Seed plan. Features not included on Seed are no longer available.\n\nResubscribe: ${renewLink}\n\nYour data is safe - resubscribing restores full access immediately.\n\n© 2024 Sanctuary Connect`,
   }),
 
   welcome: (churchName) => ({

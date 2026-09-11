@@ -2,31 +2,36 @@ import cron from 'node-cron';
 import Subscription from '../models/Subscription.js';
 import Organization from '../models/Organization.js';
 import { getPlanById } from '../config/plans.js';
-import { sendSubscriptionExpiringEmail, sendSubscriptionExpiredEmail } from '../utils/email.js';
+import { sendSubscriptionExpiringEmail, sendSubscriptionExpiredEmail, sendSubscriptionDowngradedEmail } from '../utils/email.js';
 import notificationService from '../services/notificationService.js';
+import { GRACE_PERIOD_DAYS } from '../utils/subscriptionStatus.js';
 
 /**
- * Subscription Expiry Notifications
+ * Subscription Expiry Notifications + Grace-Period Auto-Downgrade
  *
- * Runs daily. Emails (and creates an in-app notification for) the org admin:
- * - 3 days before currentPeriodEnd, once per billing period
- * - once currentPeriodEnd has passed, once per billing period
- *
- * Deliberately does NOT change subscription.status - access enforcement is
- * handled separately by currentPeriodEnd comparisons in requireFeature/
- * checkFeature/isActive. This job is notification-only.
+ * Runs daily. For each org's subscription:
+ * - RENEWAL_REMINDER_DAYS before currentPeriodEnd: email + in-app notice,
+ *   once per billing period
+ * - once currentPeriodEnd has passed: email + in-app notice, once per period
+ *   (access is NOT cut off yet - a GRACE_PERIOD_DAYS window follows,
+ *   enforced the same way access always is, via isSubscriptionActive() in
+ *   requireFeature/checkFeature)
+ * - once GRACE_PERIOD_DAYS past currentPeriodEnd with still no renewal: the
+ *   subscription is auto-downgraded to the free 'seed' plan and the admin is
+ *   emailed. This is the only step here that actually changes plan/billing
+ *   state - everything before it is notification-only.
  */
 
-const REMINDER_WINDOW_DAYS = 3;
+const RENEWAL_REMINDER_DAYS = 7;
 
-const renewLink = () => `${process.env.CLIENT_URL || 'https://app.sanctuaryconnect.org'}/dashboard/settings/subscription`;
+const renewLink = () => `${process.env.CLIENT_URL || 'https://app.sanctuaryconnect.org'}/dashboard/settings?tab=subscription`;
 
 async function checkExpiringSubscriptions() {
   try {
     console.log('[Subscription Expiry Job] Running expiry check...');
 
     const now = new Date();
-    const reminderCutoff = new Date(now.getTime() + REMINDER_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+    const reminderCutoff = new Date(now.getTime() + RENEWAL_REMINDER_DAYS * 24 * 60 * 60 * 1000);
 
     // --- 1. Expiring within the reminder window, not yet reminded this period ---
     const expiringSoon = await Subscription.find({
@@ -79,7 +84,7 @@ async function checkExpiringSubscriptions() {
           channels: { inApp: true },
           relatedModel: 'Subscription',
           relatedModelId: subscription._id,
-          actionUrl: '/dashboard/settings/subscription',
+          actionUrl: '/dashboard/settings?tab=subscription',
         }
       );
 
@@ -114,7 +119,7 @@ async function checkExpiringSubscriptions() {
         continue;
       }
 
-      const emailSent = await sendSubscriptionExpiredEmail(admin.email, admin.firstName || 'there', organization.churchName, plan.name, renewLink());
+      const emailSent = await sendSubscriptionExpiredEmail(admin.email, admin.firstName || 'there', organization.churchName, plan.name, renewLink(), GRACE_PERIOD_DAYS);
 
       await notificationService.createNotification(
         admin._id,
@@ -127,7 +132,7 @@ async function checkExpiringSubscriptions() {
           channels: { inApp: true },
           relatedModel: 'Subscription',
           relatedModelId: subscription._id,
-          actionUrl: '/dashboard/settings/subscription',
+          actionUrl: '/dashboard/settings?tab=subscription',
         }
       );
 
@@ -139,7 +144,67 @@ async function checkExpiringSubscriptions() {
       console.log(`[Subscription Expiry Job] ${emailSent ? 'Sent' : 'Attempted (email failed, will retry)'} expired notice for org ${subscription.organizationId} (${plan.name})`);
     }
 
-    console.log(`[Subscription Expiry Job] Done - ${expiringSoon.length} reminder(s), ${justExpired.length} expired notice(s)`);
+    // --- 3. Grace period fully lapsed with no renewal - auto-downgrade to seed ---
+    const graceExpiredCutoff = new Date(now.getTime() - GRACE_PERIOD_DAYS * 24 * 60 * 60 * 1000);
+    const graceLapsed = await Subscription.find({
+      status: { $in: ['active', 'trialing'] },
+      planId: { $ne: 'seed' },
+      currentPeriodEnd: { $lt: graceExpiredCutoff },
+      $expr: {
+        $or: [
+          { $eq: ['$autoDowngradedAt', null] },
+          { $lt: ['$autoDowngradedAt', '$currentPeriodStart'] },
+        ],
+      },
+    });
+
+    for (const subscription of graceLapsed) {
+      const previousPlan = getPlanById(subscription.planId);
+
+      const organization = await Organization.findById(subscription.organizationId).populate('adminId', 'email firstName');
+      const admin = organization?.adminId;
+
+      subscription.planId = 'seed';
+      subscription.status = 'active';
+      subscription.currentPeriodStart = now;
+      subscription.currentPeriodEnd = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+      subscription.autoDowngradedAt = now;
+      subscription.paymentHistory.push({
+        reference: `auto_downgrade_${subscription.organizationId}_${now.getTime()}`,
+        amount: 0,
+        currency: 'GHS',
+        planId: 'seed',
+        type: 'downgrade',
+        status: 'completed',
+        paidAt: now,
+      });
+      await subscription.save();
+
+      if (admin?.email) {
+        await sendSubscriptionDowngradedEmail(admin.email, admin.firstName || 'there', organization.churchName, previousPlan?.name || subscription.planId, renewLink());
+
+        await notificationService.createNotification(
+          admin._id,
+          subscription.organizationId,
+          'subscription_downgraded',
+          `Switched to the Seed (free) plan`,
+          `${previousPlan?.name || 'Your'} subscription wasn't renewed within the grace period, so ${organization.churchName} has been switched to the free Seed plan.`,
+          {
+            priority: 'high',
+            channels: { inApp: true, email: false },
+            relatedModel: 'Subscription',
+            relatedModelId: subscription._id,
+            actionUrl: '/dashboard/settings?tab=subscription',
+          }
+        );
+      } else {
+        console.warn(`[Subscription Expiry Job] No admin email for org ${subscription.organizationId}, downgraded without notice`);
+      }
+
+      console.log(`[Subscription Expiry Job] Auto-downgraded org ${subscription.organizationId} from ${previousPlan?.name || subscription.planId} to Seed (grace period lapsed)`);
+    }
+
+    console.log(`[Subscription Expiry Job] Done - ${expiringSoon.length} reminder(s), ${justExpired.length} expired notice(s), ${graceLapsed.length} auto-downgrade(s)`);
   } catch (error) {
     console.error('[Subscription Expiry Job] Error:', error);
   }

@@ -176,14 +176,14 @@ export const sendSubscriptionExpiringEmail = async (email, name, churchName, pla
 /**
  * Send subscription-expired notice email
  */
-export const sendSubscriptionExpiredEmail = async (email, name, churchName, planName, renewLink) => {
+export const sendSubscriptionExpiredEmail = async (email, name, churchName, planName, renewLink, graceDays) => {
   try {
     if (!hasEmailConfig) {
       console.warn('⚠️  EMAIL not configured. Subscription expired for:', churchName);
       return true;
     }
 
-    const { subject, html, text } = emailTemplates.subscriptionExpired(name, churchName, planName, renewLink);
+    const { subject, html, text } = emailTemplates.subscriptionExpired(name, churchName, planName, renewLink, graceDays);
 
     const result = await sendEmailWithRetry({
       from: EMAIL_FROM,
@@ -202,6 +202,39 @@ export const sendSubscriptionExpiredEmail = async (email, name, churchName, plan
     return true;
   } catch (error) {
     console.error('❌ Unexpected error in sendSubscriptionExpiredEmail:', error.message);
+    return false;
+  }
+};
+
+/**
+ * Send subscription-auto-downgraded notice email (grace period lapsed)
+ */
+export const sendSubscriptionDowngradedEmail = async (email, name, churchName, planName, renewLink) => {
+  try {
+    if (!hasEmailConfig) {
+      console.warn('⚠️  EMAIL not configured. Subscription auto-downgraded for:', churchName);
+      return true;
+    }
+
+    const { subject, html, text } = emailTemplates.subscriptionAutoDowngraded(name, churchName, planName, renewLink);
+
+    const result = await sendEmailWithRetry({
+      from: EMAIL_FROM,
+      to: [email],
+      subject,
+      html,
+      text,
+    }, 2);
+
+    if (!result.success) {
+      console.error('❌ Error sending subscription-auto-downgraded email:', result.error?.message);
+      return false;
+    }
+
+    console.log('✓ Subscription-auto-downgraded email sent to:', email);
+    return true;
+  } catch (error) {
+    console.error('❌ Unexpected error in sendSubscriptionDowngradedEmail:', error.message);
     return false;
   }
 };
