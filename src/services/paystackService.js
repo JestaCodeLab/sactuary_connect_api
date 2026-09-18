@@ -24,45 +24,60 @@ function getClient(secretKey) {
  * @param {string} [secretKey] - Merchant's own secret key; defaults to the platform key
  * @returns {object} { verified, data } where data contains amount, currency, customer, channel, metadata, etc.
  */
+const PENDING_RETRY_ATTEMPTS = 4;
+const PENDING_RETRY_DELAY_MS = 2000;
+
 export async function verifyTransaction(reference, secretKey) {
-  try {
-    const client = getClient(secretKey);
-    const response = await client.get(`/transaction/verify/${encodeURIComponent(reference)}`);
+  const client = getClient(secretKey);
 
-    const { status, data } = response.data;
+  for (let attempt = 1; attempt <= PENDING_RETRY_ATTEMPTS; attempt++) {
+    try {
+      const response = await client.get(`/transaction/verify/${encodeURIComponent(reference)}`);
+      const { status, data } = response.data;
 
-    if (!status || data.status !== 'success') {
+      if (status && data.status === 'success') {
+        logger.info(`Paystack verified: ref=${reference}, amount=${data.amount}, channel=${data.channel}`);
+        return {
+          verified: true,
+          data: {
+            reference: data.reference,
+            amount: data.amount, // in pesewas (smallest unit)
+            currency: data.currency,
+            channel: data.channel, // 'card' or 'mobile_money'
+            paidAt: data.paid_at,
+            customer: data.customer,
+            authorization: data.authorization,
+            gatewayResponse: data.gateway_response,
+            metadata: data.metadata,
+          },
+        };
+      }
+
+      // Mobile money (and sometimes bank transfer) charges can stay 'pending'
+      // for a few seconds after Paystack's inline popup already reported
+      // success to the client, since the charge itself settles async. Retry
+      // a few times before treating it as a genuine failure - otherwise a
+      // legitimate payment gets reported to the user as "verification failed".
+      if (data?.status === 'pending' && attempt < PENDING_RETRY_ATTEMPTS) {
+        logger.info(`Paystack verification pending for ref ${reference}, retrying (${attempt}/${PENDING_RETRY_ATTEMPTS})`);
+        await new Promise(resolve => setTimeout(resolve, PENDING_RETRY_DELAY_MS));
+        continue;
+      }
+
       logger.warn(`Paystack verification failed for ref ${reference}: status=${data?.status}`);
       return {
         verified: false,
         data: data,
         message: data?.gateway_response || 'Transaction not successful',
       };
+    } catch (error) {
+      if (error.response) {
+        logger.error(`Paystack verify error (${error.response.status}): ${JSON.stringify(error.response.data)}`);
+        throw new Error(error.response.data?.message || 'Paystack verification failed');
+      }
+      logger.error(`Paystack verify error: ${error.message}`);
+      throw error;
     }
-
-    logger.info(`Paystack verified: ref=${reference}, amount=${data.amount}, channel=${data.channel}`);
-
-    return {
-      verified: true,
-      data: {
-        reference: data.reference,
-        amount: data.amount, // in pesewas (smallest unit)
-        currency: data.currency,
-        channel: data.channel, // 'card' or 'mobile_money'
-        paidAt: data.paid_at,
-        customer: data.customer,
-        authorization: data.authorization,
-        gatewayResponse: data.gateway_response,
-        metadata: data.metadata,
-      },
-    };
-  } catch (error) {
-    if (error.response) {
-      logger.error(`Paystack verify error (${error.response.status}): ${JSON.stringify(error.response.data)}`);
-      throw new Error(error.response.data?.message || 'Paystack verification failed');
-    }
-    logger.error(`Paystack verify error: ${error.message}`);
-    throw error;
   }
 }
 
