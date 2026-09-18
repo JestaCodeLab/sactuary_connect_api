@@ -90,7 +90,7 @@ export const PLANS = {
     billingCycle: 'monthly',
     limits: {
       maxMembers: 1000,
-      maxBranches: -1, // Unlimited for multi-branch ministries
+      maxBranches: 5,
       maxDepartments: 50,
       maxEvents: 500,
       smsCredits: 250,
