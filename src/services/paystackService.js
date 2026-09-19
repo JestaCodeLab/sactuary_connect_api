@@ -72,6 +72,17 @@ export async function verifyTransaction(reference, secretKey) {
       };
     } catch (error) {
       if (error.response) {
+        // A brand-new reference can briefly 404 right after the charge,
+        // before Paystack's read layer has indexed it - retry the same as
+        // a 'pending' status before surfacing this as a real failure. If it
+        // never resolves, this is almost always a key mismatch (verifying
+        // with a secret key from a different Paystack integration/account
+        // than the public key that created the charge), not a timing issue.
+        if (error.response.status === 404 && attempt < PENDING_RETRY_ATTEMPTS) {
+          logger.warn(`Paystack verify 404 for ref ${reference}, retrying (${attempt}/${PENDING_RETRY_ATTEMPTS})`);
+          await new Promise(resolve => setTimeout(resolve, PENDING_RETRY_DELAY_MS));
+          continue;
+        }
         logger.error(`Paystack verify error (${error.response.status}): ${JSON.stringify(error.response.data)}`);
         throw new Error(error.response.data?.message || 'Paystack verification failed');
       }

@@ -45,7 +45,7 @@ export const PLANS = {
     id: 'growth',
     name: 'Growth Plan',
     description: 'Ideal for established churches',
-    price: 550,
+    price: 1000,
     currency: 'GHS',
     billingCycle: 'monthly',
     isPopular: true,
@@ -85,7 +85,7 @@ export const PLANS = {
     id: 'ascend',
     name: 'Ascend Plan',
     description: 'Built for large and multi-branch ministries',
-    price: 1000,
+    price: 1500,
     currency: 'GHS',
     billingCycle: 'monthly',
     limits: {
