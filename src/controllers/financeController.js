@@ -143,7 +143,11 @@ export const getFinanceOverview = async (req, res) => {
 async function fetchReportData(req, startDate, endDate) {
   const dateFilter = {};
   if (startDate) dateFilter.$gte = new Date(startDate);
-  if (endDate) dateFilter.$lte = new Date(endDate);
+  if (endDate) {
+    dateFilter.$lte = new Date(endDate);
+    // date-only endDate means the end of that day, not its midnight start
+    if (/^\d{4}-\d{2}-\d{2}$/.test(String(endDate))) dateFilter.$lte.setUTCHours(23, 59, 59, 999);
+  }
 
   const donationFilter = startDate || endDate ? { ...branchFilter(req), donationDate: dateFilter } : { ...branchFilter(req) };
   const expenseFilter = startDate || endDate

@@ -3,6 +3,7 @@ import ShepherdAlert from '../models/ShepherdAlert.js';
 import ShepherdAlertLog from '../models/ShepherdAlertLog.js';
 import AttendanceRecord from '../models/AttendanceRecord.js';
 import Member from '../models/Member.js';
+import Event from '../models/Event.js';
 import smsService from '../services/smsService.js';
 import { normalizePhone } from '../utils/phoneUtils.js';
 import { branchFilter, resolveCreateBranch } from '../utils/branchQuery.js';
@@ -19,6 +20,18 @@ const LOOKBACK_MAX_DAYS = 365;
 const MONITORING_EXEMPT_STATUSES = ['visiting', 'transferred'];
 
 /**
+ * Returns an error message if eventIds isn't an array of events belonging to
+ * the organization, otherwise null. An empty array is valid (= all events).
+ */
+async function validateEventIds(eventIds, organizationId) {
+  if (!Array.isArray(eventIds)) return 'eventIds must be an array';
+  if (eventIds.length === 0) return null;
+  if (!eventIds.every((id) => mongoose.isValidObjectId(id))) return 'Invalid event selected';
+  const count = await Event.countDocuments({ _id: { $in: eventIds }, organizationId });
+  return count === new Set(eventIds.map(String)).size ? null : 'Some specified events do not exist';
+}
+
+/**
  * Get all shepherd alerts for an organization, scoped to the selected
  * branch (or the user's assigned branches) the same way events/members are.
  */
@@ -32,6 +45,7 @@ export const getShepherdAlerts = async (req, res) => {
     const alerts = await ShepherdAlert.find(filter)
       .populate('shepherds.memberId', 'firstName lastName phone')
       .populate('branchId', 'name')
+      .populate('eventIds', 'title')
       .sort({ createdAt: -1 });
 
     res.json(alerts);
@@ -54,7 +68,8 @@ export const getShepherdAlert = async (req, res) => {
       organizationId,
     })
       .populate('shepherds.memberId', 'firstName lastName phone')
-      .populate('branchId', 'name');
+      .populate('branchId', 'name')
+      .populate('eventIds', 'title');
 
     if (!alert) {
       return res.status(404).json({ error: 'Shepherd alert not found' });
@@ -78,6 +93,7 @@ export const createShepherdAlert = async (req, res) => {
       shepherds,
       absenceThreshold = 3,
       lookbackPeriodDays = 30,
+      eventIds = [],
     } = req.body;
 
     // Validate required fields
@@ -117,6 +133,11 @@ export const createShepherdAlert = async (req, res) => {
       phoneNumber: normalizePhone(s.phoneNumber),
     }));
 
+    const eventIdsError = await validateEventIds(eventIds, organizationId);
+    if (eventIdsError) {
+      return res.status(400).json({ error: eventIdsError });
+    }
+
     // Create alert (monitors all members in this branch)
     const alert = new ShepherdAlert({
       organizationId,
@@ -125,11 +146,13 @@ export const createShepherdAlert = async (req, res) => {
       shepherds: normalizedShepherds,
       absenceThreshold,
       lookbackPeriodDays,
+      eventIds,
     });
 
     await alert.save();
     await alert.populate('shepherds.memberId', 'firstName lastName phone');
     await alert.populate('branchId', 'name');
+    await alert.populate('eventIds', 'title');
 
     res.status(201).json({ alert });
   } catch (error) {
@@ -150,7 +173,7 @@ export const updateShepherdAlert = async (req, res) => {
     // Only these fields are client-settable - strip everything else (in
     // particular organizationId, totalAlertsTriggered, smsSentCount, lastCheckAt,
     // which were previously mass-assignable straight from the request body).
-    const ALLOWED_FIELDS = ['name', 'shepherds', 'absenceThreshold', 'lookbackPeriodDays', 'branchId', 'isActive'];
+    const ALLOWED_FIELDS = ['name', 'shepherds', 'absenceThreshold', 'lookbackPeriodDays', 'branchId', 'isActive', 'eventIds'];
     Object.keys(updates).forEach((key) => {
       if (!ALLOWED_FIELDS.includes(key)) {
         delete updates[key];
@@ -173,6 +196,13 @@ export const updateShepherdAlert = async (req, res) => {
     if (updates.lookbackPeriodDays !== undefined) {
       if (updates.lookbackPeriodDays < LOOKBACK_MIN_DAYS || updates.lookbackPeriodDays > LOOKBACK_MAX_DAYS) {
         return res.status(400).json({ error: `Lookback period must be between ${LOOKBACK_MIN_DAYS} and ${LOOKBACK_MAX_DAYS} days` });
+      }
+    }
+
+    if (updates.eventIds !== undefined) {
+      const eventIdsError = await validateEventIds(updates.eventIds, organizationId);
+      if (eventIdsError) {
+        return res.status(400).json({ error: eventIdsError });
       }
     }
 
@@ -203,7 +233,8 @@ export const updateShepherdAlert = async (req, res) => {
       { new: true }
     )
       .populate('shepherds.memberId', 'firstName lastName phone')
-      .populate('branchId', 'name');
+      .populate('branchId', 'name')
+      .populate('eventIds', 'title');
 
     if (!alert) {
       return res.status(404).json({ error: 'Shepherd alert not found' });
@@ -372,6 +403,11 @@ async function executeShepherdAlertCheck(alert, organizationId) {
     };
     if (alert.branchId) {
       matchStage.branchId = new mongoose.Types.ObjectId(alert.branchId);
+    }
+    // Restrict to the services this alert was configured to monitor
+    // (none selected = every event, the original behaviour)
+    if (alert.eventIds?.length > 0) {
+      matchStage.eventId = { $in: alert.eventIds.map((id) => new mongoose.Types.ObjectId(id._id || id)) };
     }
 
     // A "service" is identified by its event, plus the occurrence date for

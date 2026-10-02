@@ -41,6 +41,15 @@ const shepherdAlertSchema = new mongoose.Schema(
         },
       },
     ],
+    // Events (services) whose attendance this alert measures. Empty = every
+    // event in the branch, which lumps midweek meetings (e.g. a Tuesday
+    // prayer service) in with Sunday and inflates absence counts.
+    eventIds: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Event',
+      },
+    ],
     // Absence threshold (e.g., 3 absences)
     absenceThreshold: {
       type: Number,

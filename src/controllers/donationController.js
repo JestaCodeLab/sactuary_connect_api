@@ -5,6 +5,38 @@ import { branchFilter, resolveCreateBranch } from '../utils/branchQuery.js';
 import resend, { hasEmailConfig, EMAIL_FROM } from '../config/email.js';
 import { checkDonationLimit } from '../utils/usageLimits.js';
 import smsService from '../services/smsService.js';
+import cloudinary from '../config/cloudinary.js';
+
+// A date-only endDate ('2026-09-30') means the END of that day, not its
+// midnight start - otherwise records with a time-of-day on the last day
+// of the range are silently excluded.
+const endOfDay = (value) => {
+  const d = new Date(value);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(value))) d.setUTCHours(23, 59, 59, 999);
+  return d;
+};
+
+// 'YYYY-MM' for every calendar month that falls entirely inside the range.
+// Partial months (e.g. a single week) don't qualify.
+const monthsFullyInRange = (startDate, endDate) => {
+  if (!startDate || !endDate) return [];
+  const start = new Date(startDate);
+  const end = endOfDay(endDate);
+  const months = [];
+  let y = start.getUTCFullYear();
+  let m = start.getUTCMonth();
+  while (true) {
+    const monthStart = new Date(Date.UTC(y, m, 1));
+    const monthEnd = new Date(Date.UTC(y, m + 1, 0, 23, 59, 59, 999));
+    if (monthStart > end) break;
+    if (monthStart >= start && monthEnd <= end) {
+      months.push(`${y}-${String(m + 1).padStart(2, '0')}`);
+    }
+    m += 1;
+    if (m > 11) { m = 0; y += 1; }
+  }
+  return months;
+};
 
 export const getAllDonations = async (req, res) => {
   try {
@@ -14,11 +46,26 @@ export const getAllDonations = async (req, res) => {
     if (startDate || endDate) {
       filter.donationDate = {};
       if (startDate) filter.donationDate.$gte = new Date(startDate);
-      if (endDate) filter.donationDate.$lte = new Date(endDate);
+      if (endDate) filter.donationDate.$lte = endOfDay(endDate);
     }
     if (donationType) filter.donationType = donationType;
     if (fundBucketId) filter.fundBucketId = fundBucketId;
     if (paymentMethod) filter.paymentMethod = paymentMethod;
+
+    // Tithes are reported by the month they were paid FOR, not when they were
+    // keyed in or paid: a tithe recorded in October for September belongs in
+    // September. Where the range covers whole months, match on paidForMonth;
+    // tithes with no paidForMonth (older records) fall back to their date.
+    if (donationType === 'tithe' && filter.donationDate) {
+      const coveredMonths = monthsFullyInRange(startDate, endDate);
+      if (coveredMonths.length > 0) {
+        filter.$or = [
+          { paidForMonth: { $in: coveredMonths } },
+          { paidForMonth: { $in: [null, ''] }, donationDate: filter.donationDate },
+        ];
+        delete filter.donationDate;
+      }
+    }
 
     // Pagination is opt-in (page/limit present) so existing unpaginated
     // callers keep getting a plain array back.
@@ -40,7 +87,7 @@ export const getAllDonations = async (req, res) => {
           .populate('fundBucketId', 'name targetAmount targetDate status')
           .populate('offeringTypeId', 'name')
           .populate('eventId', 'title startDate')
-          .sort({ createdAt: -1 })
+          .sort({ donationDate: -1, createdAt: -1 })
           .skip(skip)
           .limit(limitNum),
         Donation.countDocuments(filter),
@@ -73,7 +120,7 @@ export const getAllDonations = async (req, res) => {
       .populate('fundBucketId', 'name targetAmount targetDate status')
       .populate('offeringTypeId', 'name')
       .populate('eventId', 'title startDate')
-      .sort({ createdAt: -1 });
+      .sort({ donationDate: -1, createdAt: -1 });
     res.json(donations);
   } catch (error) {
     console.error('Error fetching donations:', error);
@@ -286,6 +333,55 @@ export const updateDonation = async (req, res) => {
   }
 };
 
+// Removes a manually-recorded donation (e.g. a double entry) together with its
+// ledger Transaction so income totals and the ledger stay consistent. Online
+// (Paystack) donations are real payments reconciled against the provider, so
+// they can't be deleted from here.
+export const deleteDonation = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const donation = await Donation.findOne({ _id: id, ...branchFilter(req) });
+
+    if (!donation) {
+      return res.status(404).json({ error: 'Donation not found' });
+    }
+
+    if (donation.paymentMethod === 'online') {
+      return res.status(400).json({ error: 'Online payments cannot be deleted' });
+    }
+
+    await Transaction.deleteMany({ relatedModel: 'Donation', relatedId: donation._id });
+    await donation.deleteOne();
+
+    res.json({ message: 'Donation deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting donation:', error);
+    res.status(500).json({ error: 'Failed to delete donation' });
+  }
+};
+
+// Uploads a proof-of-payment file (PDF or image) to Cloudinary and returns its URL
+export const uploadDonationAttachment = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    const url = await new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        { resource_type: 'auto', folder: `sanctuary_connect/donations/${req.organizationId}` },
+        (error, result) => (error ? reject(error) : resolve(result.secure_url))
+      );
+      stream.end(req.file.buffer);
+    });
+
+    res.status(201).json({ url, fileName: req.file.originalname });
+  } catch (error) {
+    console.error('Error uploading donation attachment:', error);
+    res.status(500).json({ error: 'Failed to upload attachment' });
+  }
+};
+
 export const getDonationStats = async (req, res) => {
   try {
     const stats = await Donation.aggregate([
@@ -422,6 +518,8 @@ export default {
   getDonationById,
   createDonation,
   updateDonation,
+  deleteDonation,
+  uploadDonationAttachment,
   getDonationStats,
   sendReceipt,
 };
