@@ -409,6 +409,15 @@ async function executeShepherdAlertCheck(alert, organizationId) {
     if (alert.eventIds?.length > 0) {
       matchStage.eventId = { $in: alert.eventIds.map((id) => new mongoose.Types.ObjectId(id._id || id)) };
     }
+    // Shepherd alerts only measure Sunday services - midweek gatherings
+    // (e.g. Tuesday prayer) must never count toward absences, even when no
+    // specific events were selected. $dayOfWeek: Sunday = 1.
+    matchStage.$expr = {
+      $eq: [
+        { $dayOfWeek: { date: { $ifNull: ['$occurrenceDate', '$createdAt'] }, timezone: 'Africa/Accra' } },
+        1,
+      ],
+    };
 
     // A "service" is identified by its event, plus the occurrence date for
     // recurring events, so each occurrence (e.g. each Sunday) counts separately.
