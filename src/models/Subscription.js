@@ -109,6 +109,7 @@ const subscriptionSchema = new mongoose.Schema({
       enum: ['pending', 'completed'],
     },
     metadata: mongoose.Schema.Types.Mixed,
+    createdAt: { type: Date, default: Date.now },
   }],
 
   // Metadata

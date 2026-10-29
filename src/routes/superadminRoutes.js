@@ -34,6 +34,10 @@ import {
   createSmsPackage,
   updateSmsPackage,
   deleteSmsPackage,
+  listPlanDiscounts,
+  createPlanDiscount,
+  updatePlanDiscount,
+  deletePlanDiscount,
   getAuditLog,
   createSuperadmin,
   listPendingFinanceAccounts,
@@ -97,6 +101,12 @@ router.get('/sms-packages', listSmsPackages);
 router.post('/sms-packages', createSmsPackage);
 router.patch('/sms-packages/:id', updateSmsPackage);
 router.delete('/sms-packages/:id', deleteSmsPackage);
+
+// Plan Discounts
+router.get('/plan-discounts', listPlanDiscounts);
+router.post('/plan-discounts', createPlanDiscount);
+router.patch('/plan-discounts/:id', updatePlanDiscount);
+router.delete('/plan-discounts/:id', deletePlanDiscount);
 
 // SMS Credits
 router.get('/sms-credits', listSmsCredits);

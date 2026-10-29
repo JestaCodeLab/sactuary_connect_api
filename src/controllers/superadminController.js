@@ -7,6 +7,7 @@ import SmsCredit from '../models/SmsCredit.js';
 import PlatformConfig from '../models/PlatformConfig.js';
 import smsService from '../services/smsService.js';
 import SmsPackage from '../models/SmsPackage.js';
+import PlanDiscount from '../models/PlanDiscount.js';
 import Member from '../models/Member.js';
 import Branch from '../models/Branch.js';
 import Department from '../models/Department.js';
@@ -992,6 +993,98 @@ export const deleteSmsPackage = async (req, res) => {
   if (!pkg) return res.status(404).json({ error: 'Package not found' });
   await log(req.user.userId, 'delete_sms_package', { details: { name: pkg.name } });
   res.json({ message: 'SMS package deleted' });
+};
+
+// ─── Plan Discounts ──────────────────────────────────────────────────────────
+
+const PAID_PLAN_IDS = Object.values(PLANS).filter(p => p.price > 0).map(p => p.id);
+
+// Validates and normalizes a discount payload. Returns { error } or { data }.
+function parseDiscountBody(body, { partial = false } = {}) {
+  const data = {};
+  const { name, planId, billingCycle, type, value, isActive, startsAt, endsAt } = body;
+
+  if (!partial || name !== undefined) {
+    if (!name || !String(name).trim()) return { error: 'name is required' };
+    data.name = String(name).trim();
+  }
+  if (!partial || planId !== undefined) {
+    const id = planId || 'all';
+    if (id !== 'all' && !PAID_PLAN_IDS.includes(id)) {
+      return { error: `planId must be 'all' or one of: ${PAID_PLAN_IDS.join(', ')}` };
+    }
+    data.planId = id;
+  }
+  if (!partial || billingCycle !== undefined) {
+    const cycle = billingCycle || 'annual';
+    if (!['monthly', 'annual', 'both'].includes(cycle)) return { error: "billingCycle must be 'monthly', 'annual' or 'both'" };
+    data.billingCycle = cycle;
+  }
+  if (!partial || type !== undefined) {
+    const t = type || 'percent';
+    if (!['percent', 'fixed'].includes(t)) return { error: "type must be 'percent' or 'fixed'" };
+    data.type = t;
+  }
+  if (!partial || value !== undefined) {
+    const v = Number(value);
+    if (!Number.isFinite(v) || v <= 0) return { error: 'value must be a number greater than 0' };
+    data.value = v;
+  }
+  const effectiveType = data.type;
+  if (data.value !== undefined && effectiveType === 'percent' && data.value > 100) {
+    return { error: 'A percent discount cannot exceed 100' };
+  }
+  if (isActive !== undefined) data.isActive = Boolean(isActive);
+  if (startsAt !== undefined) data.startsAt = startsAt ? new Date(startsAt) : null;
+  if (endsAt !== undefined) data.endsAt = endsAt ? new Date(endsAt) : null;
+  if (data.startsAt && data.endsAt && data.endsAt <= data.startsAt) {
+    return { error: 'endsAt must be after startsAt' };
+  }
+  return { data };
+}
+
+export const listPlanDiscounts = async (req, res) => {
+  const discounts = await PlanDiscount.find().sort({ createdAt: -1 });
+  res.json({ discounts });
+};
+
+export const createPlanDiscount = async (req, res) => {
+  const { error, data } = parseDiscountBody(req.body);
+  if (error) return res.status(400).json({ error });
+
+  const discount = await PlanDiscount.create({ ...data, createdBy: req.user.userId });
+  await log(req.user.userId, 'create_plan_discount', { details: data });
+  res.status(201).json({ message: 'Discount created', discount });
+};
+
+export const updatePlanDiscount = async (req, res) => {
+  const discount = await PlanDiscount.findById(req.params.id);
+  if (!discount) return res.status(404).json({ error: 'Discount not found' });
+
+  const { error, data } = parseDiscountBody(req.body, { partial: true });
+  if (error) return res.status(400).json({ error });
+
+  // Cross-field checks need the merged result, not just the patch
+  const merged = { type: discount.type, value: discount.value, startsAt: discount.startsAt, endsAt: discount.endsAt, ...data };
+  if (merged.type === 'percent' && merged.value > 100) {
+    return res.status(400).json({ error: 'A percent discount cannot exceed 100' });
+  }
+  if (merged.startsAt && merged.endsAt && merged.endsAt <= merged.startsAt) {
+    return res.status(400).json({ error: 'endsAt must be after startsAt' });
+  }
+
+  const before = discount.toObject();
+  Object.assign(discount, data);
+  await discount.save();
+  await log(req.user.userId, 'update_plan_discount', { details: { id: discount._id, before, after: data } });
+  res.json({ message: 'Discount updated', discount });
+};
+
+export const deletePlanDiscount = async (req, res) => {
+  const discount = await PlanDiscount.findByIdAndDelete(req.params.id);
+  if (!discount) return res.status(404).json({ error: 'Discount not found' });
+  await log(req.user.userId, 'delete_plan_discount', { details: { id: discount._id, name: discount.name } });
+  res.json({ message: 'Discount deleted' });
 };
 
 // ─── Finance Account Approval ─────────────────────────────────────────────────

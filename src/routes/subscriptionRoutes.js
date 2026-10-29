@@ -14,6 +14,7 @@ import {
   updateUsage,
   initializeUpgrade,
   verifyUpgrade,
+  getQuote,
   getMySubscriptionDebug,
 } from '../controllers/subscriptionController.js';
 import { authenticateToken, authorizeRole, verifyOrgOwnership } from '../middleware/auth.js';
@@ -33,6 +34,7 @@ router.get('/:organizationId', authenticateToken, verifyOrgOwnership, getSubscri
 router.put('/:organizationId', authenticateToken, authorizeRole(['admin']), verifyOrgOwnership, updateSubscription);
 
 // Payment endpoints
+router.post('/:organizationId/quote', authenticateToken, authorizeRole(['admin']), verifyOrgOwnership, getQuote);
 router.post('/:organizationId/initialize-payment', authenticateToken, authorizeRole(['admin']), verifyOrgOwnership, initializeUpgrade);
 router.post('/:organizationId/verify-payment', authenticateToken, authorizeRole(['admin']), verifyOrgOwnership, verifyUpgrade);
 

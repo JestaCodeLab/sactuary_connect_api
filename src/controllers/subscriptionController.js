@@ -9,13 +9,13 @@ import SmsLog from '../models/SmsLog.js';
 import SmsCredit from '../models/SmsCredit.js';
 import Donation from '../models/Donation.js';
 import Transaction from '../models/Transaction.js';
-import { PLANS, getAnnualPrice, getPlanById, getAllPlans, getPublicPlans } from '../config/plans.js';
+import { PLANS, getPlanById, getAllPlans, getPublicPlans } from '../config/plans.js';
+import { TAX_RATE, addBillingPeriod, buildQuote, withPricing, withPricingForAll } from '../services/pricingService.js';
 import { verifyTransaction, initializeTransaction } from '../services/paystackService.js';
 import notificationService from '../services/notificationService.js';
 import { branchFilter } from '../utils/branchQuery.js';
 import { isSubscriptionActive, getRenewalWindowStatus } from '../utils/subscriptionStatus.js';
 
-const TAX_RATE = 0.1; // 10% platform tax
 
 /**
  * Get all available subscription plans
@@ -27,13 +27,8 @@ export const getPlans = async (req, res) => {
 
     const plans = includeEnterprise === 'true' ? getAllPlans() : getPublicPlans();
 
-    // Add annual pricing to each plan
-    const plansWithAnnual = plans.map(plan => ({
-      ...plan,
-      annualPrice: getAnnualPrice(plan.price),
-    }));
-
-    res.json(plansWithAnnual);
+    // Attach monthly/annual pricing with any active superadmin discounts applied
+    res.json(await withPricingForAll(plans));
   } catch (error) {
     console.error('Error fetching plans:', error);
     res.status(500).json({ error: 'Failed to fetch plans' });
@@ -53,10 +48,7 @@ export const getPlan = async (req, res) => {
       return res.status(404).json({ error: 'Plan not found' });
     }
 
-    res.json({
-      ...plan,
-      annualPrice: getAnnualPrice(plan.price),
-    });
+    res.json(await withPricing(plan));
   } catch (error) {
     console.error('Error fetching plan:', error);
     res.status(500).json({ error: 'Failed to fetch plan' });
@@ -118,15 +110,27 @@ export const createSubscription = async (req, res) => {
       }
     }
 
-    // Determine price
-    const price = billingCycle === 'annual' ? getAnnualPrice(plan.price) : plan.price;
+    const cycle = billingCycle === 'annual' ? 'annual' : 'monthly';
 
-    // For paid plans, verify Paystack payment
+    // For paid plans, the payment must come from a server-initialized checkout
+    // (initializeCheckout). That pending record is the source of truth for the
+    // plan, cycle and amount owed - never trust the client for any of them.
     let paystackData = null;
+    let price = 0; // pre-tax amount charged
     if (plan.price > 0) {
       const reference = paymentDetails?.reference;
       if (!reference) {
         return res.status(400).json({ error: 'Payment reference is required for paid plans' });
+      }
+
+      const pending = existingSubscription?.paymentHistory?.find(
+        p => p.reference === reference && p.status === 'pending'
+      );
+      if (!pending || pending.metadata?.planId !== planId || pending.metadata?.billingCycle !== cycle) {
+        return res.status(400).json({
+          error: 'Unrecognized payment reference. Please restart checkout.',
+          code: 'UNKNOWN_PAYMENT_REFERENCE',
+        });
       }
 
       const verification = await verifyTransaction(reference);
@@ -134,25 +138,20 @@ export const createSubscription = async (req, res) => {
         return res.status(400).json({ error: verification.message || 'Payment verification failed' });
       }
 
-      // Verify amount matches (price + tax, in pesewas)
-      const expectedAmount = Math.round((price + price * TAX_RATE) * 100);
+      const expectedAmount = Math.round(pending.amount * 100);
       if (verification.data.amount < expectedAmount) {
         return res.status(400).json({
           error: `Payment amount mismatch. Expected at least ${expectedAmount} pesewas, got ${verification.data.amount}`,
         });
       }
 
+      price = pending.metadata.subtotal;
       paystackData = verification.data;
     }
 
     // Calculate period end based on billing cycle
     const now = new Date();
-    let periodEnd;
-    if (billingCycle === 'annual') {
-      periodEnd = new Date(new Date(now).setFullYear(now.getFullYear() + 1));
-    } else {
-      periodEnd = new Date(new Date(now).setMonth(now.getMonth() + 1));
-    }
+    const periodEnd = addBillingPeriod(now, cycle);
 
     // Initialize usage with current counts
     const membersCount = await Member.countDocuments({ organizationId });
@@ -161,9 +160,9 @@ export const createSubscription = async (req, res) => {
     const subscriptionData = {
       organizationId,
       planId,
-      billingCycle: billingCycle || 'monthly',
+      billingCycle: cycle,
       status: 'active',
-      currentPeriodStart: new Date(),
+      currentPeriodStart: now,
       currentPeriodEnd: periodEnd,
       usage: {
         membersCount,
@@ -185,6 +184,7 @@ export const createSubscription = async (req, res) => {
           paidAt: paystackData?.paidAt || new Date(),
           planId,
           type: 'initial',
+          status: 'completed',
         }],
       }),
       priceAtSubscription: {
@@ -228,7 +228,7 @@ export const createSubscription = async (req, res) => {
     // Record in unified transaction ledger
     if (plan.price > 0 && paystackData) {
       const subtotal = price;
-      const taxAmount = Math.round(price * TAX_RATE);
+      const taxAmount = Math.round(price * TAX_RATE * 100) / 100;
       await Transaction.create({
         organizationId,
         type: 'subscription_payment',
@@ -247,7 +247,7 @@ export const createSubscription = async (req, res) => {
         relatedId: subscription._id,
         description: `Initial subscription - ${plan.name} plan`,
         initiatedBy: req.user.userId,
-        metadata: { planId, billingCycle: billingCycle || 'monthly', upgradeType: 'initial' },
+        metadata: { planId, billingCycle: cycle, upgradeType: 'initial' },
       });
     }
 
@@ -293,13 +293,13 @@ export const initializeCheckout = async (req, res) => {
       planId,
       billingCycle,
       paymentMethod,
-      amount,
     } = req.body;
     const userId = req.user.userId;
 
-    // Validate required fields
-    if (!organizationId || !planId || !amount) {
-      return res.status(400).json({ error: 'Organization ID, plan ID, and amount are required' });
+    // Validate required fields. The amount is intentionally NOT accepted from
+    // the client - it is quoted server-side below.
+    if (!organizationId || !planId) {
+      return res.status(400).json({ error: 'Organization ID and plan ID are required' });
     }
 
     // Verify organization exists and belongs to user
@@ -319,9 +319,17 @@ export const initializeCheckout = async (req, res) => {
       return res.status(400).json({ error: 'Invalid plan ID' });
     }
 
-    if (plan.price === 0) {
-      return res.status(400).json({ error: 'Free plans do not require payment' });
+    if (plan.price === 0 || plan.price === null) {
+      return res.status(400).json({ error: 'This plan does not require online payment' });
     }
+
+    const subscription = await Subscription.findOne({ organizationId });
+    if (!subscription) {
+      return res.status(404).json({ error: 'Subscription not found' });
+    }
+
+    const cycle = billingCycle === 'annual' ? 'annual' : 'monthly';
+    const quote = await buildQuote({ subscription, plan, billingCycle: cycle });
 
     // Get user email for payment
     const user = await User.findById(userId);
@@ -339,19 +347,32 @@ export const initializeCheckout = async (req, res) => {
     try {
       const paystackResult = await initializeTransaction({
         email: user.email,
-        amount: Math.round(amount * 100), // Convert GHS to pesewas
-        currency: 'GHS',
+        amount: quote.totalPesewas,
+        currency: quote.currency,
         reference,
         callback_url: callbackUrl,
         metadata: {
           organizationId,
           planId,
-          billingCycle: billingCycle || 'monthly',
+          billingCycle: cycle,
           paymentMethod,
           organizationName: organization.churchName,
         },
         channels: paymentMethod === 'momo' ? ['mobile_money'] : ['card'],
       });
+
+      // Pending record = the amount createSubscription will verify against
+      subscription.paymentHistory.push({
+        reference,
+        amount: quote.total,
+        currency: quote.currency,
+        channel: 'paystack_pending',
+        type: 'initial',
+        status: 'pending',
+        planId,
+        metadata: { planId, billingCycle: cycle, subtotal: quote.price, discount: quote.discount },
+      });
+      await subscription.save();
 
       console.log('🟢 [INIT CHECKOUT] Paystack checkout initialized:', { reference, url: paystackResult.authorization_url });
 
@@ -359,6 +380,7 @@ export const initializeCheckout = async (req, res) => {
         reference,
         authorizationUrl: paystackResult.authorization_url,
         accessCode: paystackResult.access_code,
+        quote,
       });
     } catch (paystackError) {
       console.error('🔴 [INIT CHECKOUT] Paystack error:', paystackError.message);
@@ -478,27 +500,34 @@ export const updateSubscription = async (req, res) => {
 
       subscription.planId = planId;
 
-      // Update price if plan changed
-      const price = billingCycle === 'annual' || subscription.billingCycle === 'annual'
-        ? getAnnualPrice(newPlan.price)
-        : newPlan.price;
-
-      subscription.priceAtSubscription = {
-        amount: price,
-        currency: newPlan.currency,
-      };
+      // A move to the free plan forfeits the paid period (existing behaviour,
+      // confirmed in the UI). A paid->paid downgrade keeps priceAtSubscription
+      // untouched: it records what was actually paid for the current period and
+      // is the basis for proration credit on the next charge.
+      if (newPlan.price === 0) {
+        subscription.priceAtSubscription = {
+          amount: 0,
+          currency: newPlan.currency,
+        };
+        subscription.billingCycle = 'monthly';
+      }
     }
 
-    // Update billing cycle if provided
+    // Billing cycle changes. Moving a paid plan to annual is a purchase and
+    // must go through initializeUpgrade/verifyUpgrade; this endpoint can never
+    // grant a year for free. Annual->monthly on a paid plan takes effect when
+    // the paid period ends (no refund), so it is ignored here.
     if (billingCycle && billingCycle !== subscription.billingCycle) {
-      subscription.billingCycle = billingCycle;
-
-      // Recalculate period end
-      const now = new Date();
-      if (billingCycle === 'annual') {
-        subscription.currentPeriodEnd = new Date(now.setFullYear(now.getFullYear() + 1));
-      } else {
-        subscription.currentPeriodEnd = new Date(now.setMonth(now.getMonth() + 1));
+      const effectivePlan = getPlanById(subscription.planId);
+      if (effectivePlan?.price > 0 && billingCycle === 'annual') {
+        return res.status(400).json({
+          error: 'Switching to annual billing requires completing payment first.',
+          code: 'PAYMENT_REQUIRED',
+        });
+      }
+      if (effectivePlan?.price === 0) {
+        subscription.billingCycle = billingCycle;
+        subscription.currentPeriodEnd = addBillingPeriod(new Date(), billingCycle);
       }
     }
 
@@ -863,6 +892,51 @@ export const updateUsage = async (req, res) => {
  * Initialize a Paystack payment for plan upgrade
  * POST /api/subscriptions/:organizationId/initialize-payment
  */
+// Validates the target of a paid purchase and returns { plan, cycle } or sends a 400.
+const resolvePurchaseTarget = (res, planId, billingCycle) => {
+  const plan = getPlanById(planId);
+  if (!plan) {
+    res.status(400).json({ error: 'Invalid plan ID' });
+    return null;
+  }
+  if (plan.price === 0 || plan.price === null) {
+    res.status(400).json({ error: 'Cannot initialize payment for a free or custom plan' });
+    return null;
+  }
+  return { plan, cycle: billingCycle === 'annual' ? 'annual' : 'monthly' };
+};
+
+/**
+ * Price quote for moving an organization onto a plan/cycle, including any
+ * active superadmin discount and credit for unused time already paid.
+ * POST /api/subscriptions/:organizationId/quote
+ */
+export const getQuote = async (req, res) => {
+  try {
+    const { organizationId } = req.params;
+    const { planId, billingCycle = 'monthly' } = req.body;
+
+    const subscription = await Subscription.findOne({ organizationId });
+    if (!subscription) {
+      return res.status(404).json({ error: 'Subscription not found' });
+    }
+
+    const target = resolvePurchaseTarget(res, planId, billingCycle);
+    if (!target) return;
+
+    res.json(await buildQuote({ subscription, plan: target.plan, billingCycle: target.cycle }));
+  } catch (error) {
+    console.error('Error building quote:', error);
+    res.status(500).json({ error: 'Failed to calculate price' });
+  }
+};
+
+/**
+ * Initialize a Paystack payment for a plan upgrade / cycle change / renewal.
+ * The amount is quoted here and recorded on a pending paymentHistory entry,
+ * which verifyUpgrade later treats as the amount owed.
+ * POST /api/subscriptions/:organizationId/initialize-payment
+ */
 export const initializeUpgrade = async (req, res) => {
   try {
     const { organizationId } = req.params;
@@ -873,47 +947,49 @@ export const initializeUpgrade = async (req, res) => {
       return res.status(404).json({ error: 'Subscription not found' });
     }
 
-    const newPlan = getPlanById(planId);
-    if (!newPlan) {
-      return res.status(400).json({ error: 'Invalid plan ID' });
-    }
-
-    if (newPlan.price === 0 || newPlan.price === null) {
-      return res.status(400).json({ error: 'Cannot initialize payment for a free or custom plan' });
-    }
+    const target = resolvePurchaseTarget(res, planId, billingCycle);
+    if (!target) return;
+    const { plan: newPlan, cycle } = target;
 
     const organization = await Organization.findById(organizationId).populate('adminId', 'email');
     if (!organization) {
       return res.status(404).json({ error: 'Organization not found' });
     }
 
-    // IDEMPOTENCY CHECK: If payment is already pending for this exact upgrade, return the same reference
-    // This prevents double-charging if user clicks "Pay" multiple times
-    const lastPendingPayment = subscription.paymentHistory && subscription.paymentHistory.length > 0
+    const quote = await buildQuote({ subscription, plan: newPlan, billingCycle: cycle });
+    if (quote.coveredByCredit) {
+      return res.status(400).json({
+        error: 'Your remaining paid time already covers this plan. The change can be made when your current period ends.',
+        code: 'CREDIT_COVERS_PLAN',
+        quote,
+      });
+    }
+
+    // IDEMPOTENCY CHECK: if a payment for this exact plan+cycle is already pending,
+    // return the same reference. Prevents double-charging if the user clicks "Pay" twice.
+    const lastPendingPayment = subscription.paymentHistory?.length
       ? subscription.paymentHistory[subscription.paymentHistory.length - 1]
       : null;
 
     if (
       lastPendingPayment &&
       lastPendingPayment.status === 'pending' &&
+      lastPendingPayment.metadata?.authorization_url &&
       lastPendingPayment.metadata?.planId === planId &&
-      lastPendingPayment.metadata?.billingCycle === billingCycle &&
+      lastPendingPayment.metadata?.billingCycle === cycle &&
       (Date.now() - new Date(lastPendingPayment.createdAt).getTime()) < 30 * 60 * 1000 // 30 min window
     ) {
-      // Return existing pending payment reference instead of creating new one
-      console.log(`[Payment Idempotency] Returning existing pending payment for org ${organizationId}`);
       return res.json({
-        authorization_url: lastPendingPayment.metadata?.authorization_url,
-        access_code: lastPendingPayment.metadata?.access_code,
+        authorization_url: lastPendingPayment.metadata.authorization_url,
+        access_code: lastPendingPayment.metadata.access_code,
         reference: lastPendingPayment.reference,
         amount: lastPendingPayment.amount,
         currency: lastPendingPayment.currency,
+        quote: lastPendingPayment.metadata.quote,
         message: 'Returning existing pending payment (idempotent)',
       });
     }
 
-    const price = billingCycle === 'annual' ? getAnnualPrice(newPlan.price) : newPlan.price;
-    const total = Math.round((price + price * TAX_RATE) * 100); // pesewas
     const reference = `upgrade_${organizationId}_${Date.now()}`;
 
     const email = organization.adminId?.email || req.user?.email;
@@ -923,34 +999,38 @@ export const initializeUpgrade = async (req, res) => {
 
     const result = await initializeTransaction({
       email,
-      amount: total,
-      currency: newPlan.currency || 'GHS',
+      amount: quote.totalPesewas,
+      currency: quote.currency,
       reference,
+      // Paystack redirects here with ?reference=...; that page calls verify-payment
+      callback_url: `${process.env.CLIENT_URL || 'https://app.sanctuaryconnect.org'}/dashboard/subscription/callback`,
       metadata: {
         organizationId,
         planId,
-        billingCycle,
+        billingCycle: cycle,
         type: 'upgrade',
       },
     });
 
-    // Record pending payment in history for idempotency check
     subscription.paymentHistory.push({
       reference,
-      amount: total / 100,
-      currency: newPlan.currency || 'GHS',
+      amount: quote.total,
+      currency: quote.currency,
       channel: 'paystack_pending',
       type: 'upgrade',
       status: 'pending',
       planId,
       metadata: {
         planId,
-        billingCycle,
+        billingCycle: cycle,
         type: 'upgrade',
+        subtotal: quote.price,
+        credit: quote.credit,
+        discount: quote.discount,
+        quote,
         authorization_url: result.authorization_url,
         access_code: result.access_code,
       },
-      createdAt: new Date(),
     });
     await subscription.save();
 
@@ -958,8 +1038,9 @@ export const initializeUpgrade = async (req, res) => {
       authorization_url: result.authorization_url,
       access_code: result.access_code,
       reference: result.reference,
-      amount: total / 100,
-      currency: newPlan.currency || 'GHS',
+      amount: quote.total,
+      currency: quote.currency,
+      quote,
     });
   } catch (error) {
     console.error('Error initializing upgrade payment:', error);
@@ -974,10 +1055,10 @@ export const initializeUpgrade = async (req, res) => {
 export const verifyUpgrade = async (req, res) => {
   try {
     const { organizationId } = req.params;
-    const { reference, planId, billingCycle = 'monthly' } = req.body;
+    const { reference } = req.body;
 
-    if (!reference || !planId) {
-      return res.status(400).json({ error: 'Payment reference and plan ID are required' });
+    if (!reference) {
+      return res.status(400).json({ error: 'Payment reference is required' });
     }
 
     const subscription = await Subscription.findOne({ organizationId });
@@ -985,25 +1066,35 @@ export const verifyUpgrade = async (req, res) => {
       return res.status(404).json({ error: 'Subscription not found' });
     }
 
-    const newPlan = getPlanById(planId);
-    if (!newPlan) {
-      return res.status(400).json({ error: 'Invalid plan ID' });
-    }
+    const entry = subscription.paymentHistory?.find(p => p.reference === reference);
 
     // IDEMPOTENCY CHECK: this reference may already have been processed by a
     // prior call (e.g. a retried client callback). Without this, replaying the
     // same reference would re-apply the plan change, duplicate the billing
     // history/Transaction entry, and re-credit SMS credits a second time.
-    const alreadyProcessed = subscription.paymentHistory?.some(
-      p => p.reference === reference && p.paidAt
-    );
-    if (alreadyProcessed) {
+    if (entry?.paidAt) {
       return res.json({
-        message: `Already processed - subscription is on ${newPlan.name}`,
+        message: `Already processed - subscription is on ${getPlanById(subscription.planId)?.name}`,
         subscription,
-        plan: newPlan,
+        plan: getPlanById(subscription.planId),
         alreadyProcessed: true,
       });
+    }
+
+    // The pending entry written by initializeUpgrade is the only source of truth
+    // for what plan/cycle/amount this reference was issued for.
+    if (!entry || entry.status !== 'pending') {
+      return res.status(400).json({
+        error: 'Unrecognized payment reference.',
+        code: 'UNKNOWN_PAYMENT_REFERENCE',
+      });
+    }
+
+    const planId = entry.metadata?.planId;
+    const cycle = entry.metadata?.billingCycle === 'annual' ? 'annual' : 'monthly';
+    const newPlan = getPlanById(planId);
+    if (!newPlan) {
+      return res.status(400).json({ error: 'Invalid plan ID' });
     }
 
     // Verify with Paystack
@@ -1012,21 +1103,23 @@ export const verifyUpgrade = async (req, res) => {
       return res.status(400).json({ error: verification.message || 'Payment verification failed' });
     }
 
-    // Verify amount
-    const price = billingCycle === 'annual' ? getAnnualPrice(newPlan.price) : newPlan.price;
-    const expectedAmount = Math.round((price + price * TAX_RATE) * 100);
+    const expectedAmount = Math.round(entry.amount * 100);
     if (verification.data.amount < expectedAmount) {
       return res.status(400).json({
         error: `Payment amount mismatch. Expected at least ${expectedAmount} pesewas, got ${verification.data.amount}`,
       });
     }
 
+    const price = entry.metadata?.subtotal ?? 0; // pre-tax, post-discount, pre-credit
+    const credit = entry.metadata?.credit ?? 0;
+    const charged = Math.round((price - credit) * 100) / 100; // pre-tax amount actually billed
+
     const currentPlan = getPlanById(subscription.planId);
     const isUpgrade = newPlan.price > (currentPlan?.price || 0);
 
     // Update subscription
     subscription.planId = planId;
-    subscription.billingCycle = billingCycle;
+    subscription.billingCycle = cycle;
     subscription.status = 'active';
     subscription.paystackReference = reference;
     subscription.paystackCustomerCode = verification.data.customer?.customer_code || subscription.paystackCustomerCode;
@@ -1035,40 +1128,34 @@ export const verifyUpgrade = async (req, res) => {
     // Reset billing period
     const now = new Date();
     subscription.currentPeriodStart = now;
-    if (billingCycle === 'annual') {
-      subscription.currentPeriodEnd = new Date(new Date(now).setFullYear(now.getFullYear() + 1));
-    } else {
-      subscription.currentPeriodEnd = new Date(new Date(now).setMonth(now.getMonth() + 1));
-    }
+    subscription.currentPeriodEnd = addBillingPeriod(now, cycle);
+    subscription.cancelAtPeriodEnd = false;
 
+    // Proration basis for the *next* change is what was actually paid for this
+    // new period: the full discounted price, since the period restarts today.
     subscription.priceAtSubscription = {
       amount: price,
       currency: newPlan.currency,
     };
 
-    // Add to payment history
-    subscription.paymentHistory.push({
-      reference: verification.data.reference,
-      amount: verification.data.amount / 100,
-      currency: verification.data.currency || 'GHS',
-      channel: verification.data.channel,
-      paidAt: verification.data.paidAt || new Date(),
-      planId,
-      type: isUpgrade ? 'upgrade' : 'renewal',
-      status: 'completed',
-    });
+    // Complete the pending entry in place (no duplicate history rows)
+    entry.amount = verification.data.amount / 100;
+    entry.currency = verification.data.currency || 'GHS';
+    entry.channel = verification.data.channel;
+    entry.paidAt = verification.data.paidAt || now;
+    entry.type = isUpgrade ? 'upgrade' : 'renewal';
+    entry.status = 'completed';
 
     await subscription.save();
 
     // Record in unified transaction ledger
-    const subtotal = price;
-    const taxAmount = Math.round(price * TAX_RATE);
+    const taxAmount = Math.round(charged * TAX_RATE * 100) / 100;
     await Transaction.create({
       organizationId,
       type: 'subscription_payment',
       direction: 'inflow',
       amount: verification.data.amount / 100,
-      subtotal,
+      subtotal: charged,
       taxAmount,
       taxRate: TAX_RATE,
       currency: verification.data.currency || 'GHS',
@@ -1079,9 +1166,16 @@ export const verifyUpgrade = async (req, res) => {
       channel: verification.data.channel,
       relatedModel: 'Subscription',
       relatedId: subscription._id,
-      description: `${isUpgrade ? 'Upgrade' : 'Renewal'} - ${newPlan.name} plan`,
+      description: `${isUpgrade ? 'Upgrade' : 'Renewal'} - ${newPlan.name} plan (${cycle})`,
       initiatedBy: req.user.userId,
-      metadata: { planId, billingCycle, upgradeType: isUpgrade ? 'upgrade' : 'renewal' },
+      metadata: {
+        planId,
+        billingCycle: cycle,
+        upgradeType: isUpgrade ? 'upgrade' : 'renewal',
+        listPrice: entry.metadata?.quote?.listPrice,
+        discount: entry.metadata?.discount || null,
+        prorationCredit: credit,
+      },
     });
 
     // Credit SMS based on new plan
@@ -1171,5 +1265,6 @@ export default {
   updateUsage,
   initializeUpgrade,
   verifyUpgrade,
+  getQuote,
   getMySubscriptionDebug,
 };

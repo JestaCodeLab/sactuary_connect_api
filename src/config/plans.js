@@ -167,12 +167,11 @@ export const PLANS = {
   },
 };
 
-// Annual pricing (2 months free = ~17% discount)
-export const ANNUAL_DISCOUNT = 2 / 12; // 2 months free
-
+// Annual LIST price is simply 12 months. Any yearly saving is a superadmin-managed
+// PlanDiscount applied by services/pricingService.js, not a hardcoded rate.
 export const getAnnualPrice = (monthlyPrice) => {
   if (!monthlyPrice) return null;
-  return Math.round(monthlyPrice * 12 * (1 - ANNUAL_DISCOUNT));
+  return Math.round(monthlyPrice * 12);
 };
 
 export const getPlanById = (planId) => {
